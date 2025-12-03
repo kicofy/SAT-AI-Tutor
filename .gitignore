@@ -1,0 +1,25 @@
+# Python / Flask
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment files
+.env
+.env.*
+!/.env.example
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+# Migrations artifacts
+/sat_platform/migrations/versions/__pycache__/
+

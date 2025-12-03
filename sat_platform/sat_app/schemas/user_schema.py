@@ -1,0 +1,54 @@
+"""Schemas for user-related payloads."""
+
+from __future__ import annotations
+
+from marshmallow import EXCLUDE, Schema, fields, validate
+
+ROLE_CHOICES = ("student", "admin")
+LANG_CHOICES = ("en", "zh", "bilingual")
+
+
+class UserProfileSchema(Schema):
+    target_score_rw = fields.Integer(allow_none=True)
+    target_score_math = fields.Integer(allow_none=True)
+    exam_date = fields.Date(allow_none=True)
+    daily_available_minutes = fields.Integer(validate=validate.Range(min=10, max=600))
+    language_preference = fields.String(validate=validate.OneOf(LANG_CHOICES))
+
+
+class RegisterSchema(Schema):
+    email = fields.Email(required=True)
+    password = fields.String(required=True, validate=validate.Length(min=8))
+    username = fields.String(validate=validate.Length(min=3, max=64))
+    profile = fields.Nested(UserProfileSchema, load_default=dict)
+
+    class Meta:
+        unknown = EXCLUDE
+
+
+class LoginSchema(Schema):
+    identifier = fields.String(required=True)
+    password = fields.String(required=True)
+
+
+class AdminCreateSchema(Schema):
+    email = fields.Email(required=True)
+    username = fields.String(required=True, validate=validate.Length(min=3, max=64))
+    password = fields.String(required=True, validate=validate.Length(min=8))
+
+
+class PublicUserProfileSchema(UserProfileSchema):
+    id = fields.Integer(dump_only=True)
+    created_at = fields.DateTime(dump_only=True)
+    updated_at = fields.DateTime(dump_only=True)
+
+
+class UserSchema(Schema):
+    id = fields.Integer(dump_only=True)
+    email = fields.Email(dump_only=True)
+    username = fields.String(dump_only=True)
+    role = fields.String(dump_only=True)
+    is_root = fields.Boolean(dump_only=True)
+    created_at = fields.DateTime(dump_only=True)
+    profile = fields.Nested(PublicUserProfileSchema, dump_only=True)
+

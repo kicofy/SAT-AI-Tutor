@@ -1,0 +1,36 @@
+"""REST API blueprints (auth, admin, learning, etc.)."""
+
+from __future__ import annotations
+
+from .admin_bp import admin_bp
+from .ai_bp import ai_bp
+from .analytics_bp import analytics_bp
+from .auth_bp import auth_bp
+from .learning_bp import learning_bp
+from .question_bp import question_bp
+from .student_bp import student_bp
+from .metrics_bp import metrics_bp
+
+BLUEPRINTS = (
+    (auth_bp, "/api/auth"),
+    (admin_bp, "/api/admin"),
+    (student_bp, "/api/student"),
+    (question_bp, "/api/question"),
+    (learning_bp, "/api/learning"),
+    (ai_bp, "/api/ai"),
+    (analytics_bp, "/api/analytics"),
+    (metrics_bp, ""),
+)
+
+__all__ = [
+    "BLUEPRINTS",
+    "admin_bp",
+    "ai_bp",
+    "analytics_bp",
+    "auth_bp",
+    "learning_bp",
+    "question_bp",
+    "student_bp",
+    "metrics_bp",
+]
+
