@@ -1,0 +1,18 @@
+@reference "../../app/globals.css";
+
+.wrapper {
+  @apply flex items-center justify-between rounded-2xl border border-white/5 bg-white/5 px-6 py-4;
+}
+
+.title {
+  @apply text-white text-xl font-semibold;
+}
+
+.subtitle {
+  @apply text-sm text-white/60;
+}
+
+.logout {
+  @apply rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80 hover:bg-white/10 transition;
+}
+

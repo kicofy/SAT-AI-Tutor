@@ -1,6 +1,12 @@
 """Database models package."""
 
-from .question import Passage, Question, QuestionSet
+from .question import (
+    Passage,
+    Question,
+    QuestionSet,
+    QuestionExplanationCache,
+    QuestionFigure,
+)
 from .user import User, UserProfile
 from .learning import (
     StudySession,
@@ -19,6 +25,8 @@ __all__ = [
     "Passage",
     "Question",
     "QuestionSet",
+    "QuestionExplanationCache",
+    "QuestionFigure",
     "StudySession",
     "UserQuestionLog",
     "SkillMastery",

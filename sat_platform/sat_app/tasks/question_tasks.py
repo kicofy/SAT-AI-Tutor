@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 from ..extensions import db
 from ..models import QuestionImportJob, QuestionDraft
+from ..services.job_events import job_event_broker
 from ..utils.file_parser import parse_file
 from ..services import ai_question_parser, pdf_ingest_service
 
@@ -21,30 +23,64 @@ def process_job(job_id: int) -> QuestionImportJob:
     if not job:
         raise ValueError(f"Job {job_id} not found")
     job.status = "processing"
+    job.error_message = None
+    job.processed_pages = 0
+    job.total_pages = 0
+    job.parsed_questions = 0
+    job.current_page = 0
+    job.status_message = "Initializing ingestion"
+    job.last_progress_at = datetime.now(timezone.utc)
     db.session.commit()
+    job_event_broker.publish({"type": "job", "payload": job.serialize()})
     try:
         if job.ingest_strategy == "vision_pdf":
-            normalized = pdf_ingest_service.ingest_pdf_document(job.source_path)
-            job.total_blocks = len(normalized)
-            for payload in normalized:
-                _save_draft(job, payload)
-                job.parsed_questions += 1
+            saved_questions = {"count": 0}
+
+            def _progress(page_idx: int, total_pages: int, normalized_count: int, message: str | None = None) -> None:
+                job.processed_pages = page_idx
+                job.total_pages = total_pages
+                job.parsed_questions = normalized_count
+                job.current_page = page_idx
+                if message:
+                    job.status_message = message
+                job.last_progress_at = datetime.now(timezone.utc)
                 db.session.commit()
+                job_event_broker.publish({"type": "job", "payload": job.serialize()})
+
+            def _on_question(payload: dict) -> None:
+                _save_draft(job, payload)
+                saved_questions["count"] += 1
+
+            pdf_ingest_service.ingest_pdf_document(
+                job.source_path,
+                progress_cb=_progress,
+                question_cb=_on_question,
+                job_id=job.id,
+            )
+            job.total_blocks = saved_questions["count"]
         else:
             blocks = _load_blocks(job)
             job.total_blocks = len(blocks)
-            for block in blocks:
+            for index, block in enumerate(blocks, start=1):
                 payload = ai_question_parser.parse_raw_question_block(block)
                 _save_draft(job, payload)
                 job.parsed_questions += 1
+                job.current_page = index
+                job.status_message = f"Normalized block {index}/{len(blocks)}"
+                job.last_progress_at = datetime.now(timezone.utc)
                 db.session.commit()
+                job_event_broker.publish({"type": "job", "payload": job.serialize()})
         job.status = "completed"
+        job.status_message = "Completed"
         job.error_message = None
     except Exception as exc:  # pragma: no cover
         job.status = "failed"
         job.error_message = str(exc)
+        job.status_message = f"Failed: {exc}"
     finally:
+        job.last_progress_at = datetime.now(timezone.utc)
         db.session.commit()
+        job_event_broker.publish({"type": "job", "payload": job.serialize()})
     return job
 
 

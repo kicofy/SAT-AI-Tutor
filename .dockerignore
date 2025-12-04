@@ -1,9 +1,0 @@
-.git
-.venv
-__pycache__
-*.pyc
-*.pyo
-.pytest_cache
-sat_platform/instance/*
-sat_platform/.env
-

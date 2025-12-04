@@ -227,7 +227,7 @@ MAIL_IMAP_USE_SSL=true
    ```
    OPENAI_API_KEY=sk-...
    AI_API_BASE=https://api.openai.com/v1
-   AI_EXPLAINER_MODEL=gpt-4.1
+   AI_EXPLAINER_MODEL=gpt-5.1
    AI_EXPLAINER_ENABLE=true   # 若设为 false，将返回占位讲解
    ```
 
@@ -320,13 +320,22 @@ MAIL_IMAP_USE_SSL=true
    ```
    - 级联 Step05~Step08 用例，再执行 `tests/test_learning_plan.py`。
 
+5. **CLI 手动生成计划**
+   ```
+   cd sat_platform
+   FLASK_APP=app.py flask plan generate --user-id 1        # 单个学生
+   FLASK_APP=app.py flask plan generate --all              # 所有学生
+   FLASK_APP=app.py flask plan generate --user-id 1 --date 2025-01-15
+   ```
+   - 便于在排程或临时调试时批量刷新某天的计划。
+
 ## Step 10 – 数据分析与诊断
 
 1. **配置**
    ```
    ANALYTICS_HISTORY_DAYS=30
    AI_DIAGNOSTIC_ENABLE=true
-   AI_DIAGNOSTIC_MODEL=gpt-4.1
+   AI_DIAGNOSTIC_MODEL=gpt-5.1
    ```
    - 若关闭 `AI_DIAGNOSTIC_ENABLE`，接口会返回本地 heuristic 诊断。
 
@@ -357,7 +366,8 @@ MAIL_IMAP_USE_SSL=true
 1. **依赖与配置**
    ```
    AI_PARSER_ENABLE=true
-   AI_PARSER_MODEL=gpt-4.1
+   AI_PARSER_MODEL=gpt-5.1
+   AI_PDF_SOLVER_MODEL=gpt-5.1
    ```
    - 上传目录默认写在 `instance/uploads/`，请确保可写；若禁用 AI，系统会用 fallback 规则生成草稿。
 

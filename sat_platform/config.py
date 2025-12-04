@@ -7,6 +7,8 @@ from datetime import timedelta
 from functools import lru_cache
 from typing import Any, Type
 
+from sqlalchemy.pool import NullPool
+
 
 class BaseConfig:
     """Shared defaults across all environments."""
@@ -18,16 +20,23 @@ class BaseConfig:
         "sqlite+pysqlite:///sat_dev.db",
     )
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change_me")
-    JWT_TOKEN_LOCATION = ("headers",)
+    JWT_TOKEN_LOCATION = ("headers", "query_string")
+    JWT_QUERY_STRING_NAME = "token"
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(
-        seconds=int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_SEC", "3600"))
+        seconds=int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_SEC", "43200"))
     )
-    AI_MODEL_NAME = os.getenv("AI_MODEL_NAME", "gpt-4.1")
+    AI_MODEL_NAME = os.getenv("AI_MODEL_NAME", "gpt-5.1")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("AI_API_KEY", "")
     AI_API_KEY = OPENAI_API_KEY  # backwards-compatible alias
     AI_API_BASE = os.getenv("AI_API_BASE", "https://api.openai.com/v1")
+    AI_API_MAX_RETRIES = int(os.getenv("AI_API_MAX_RETRIES", "3"))
+    AI_API_RETRY_BACKOFF = float(os.getenv("AI_API_RETRY_BACKOFF", "2.0"))
     AI_TIMEOUT_SECONDS = int(os.getenv("AI_TIMEOUT_SECONDS", "120"))
-    AI_EXPLAINER_MODEL = os.getenv("AI_EXPLAINER_MODEL", "gpt-4.1")
+    AI_CONNECT_TIMEOUT_SEC = int(os.getenv("AI_CONNECT_TIMEOUT_SEC", "15"))
+    AI_READ_TIMEOUT_SEC = int(
+        os.getenv("AI_READ_TIMEOUT_SEC", str(AI_TIMEOUT_SECONDS))
+    )
+    AI_EXPLAINER_MODEL = os.getenv("AI_EXPLAINER_MODEL", "gpt-5.1")
     AI_EXPLAINER_ENABLE = os.getenv("AI_EXPLAINER_ENABLE", "true").lower() in {"1", "true", "yes"}
     ADAPTIVE_DEFAULT_MASTERY = float(os.getenv("ADAPTIVE_DEFAULT_MASTERY", "0.5"))
     ADAPTIVE_CORRECT_INCREMENT = float(os.getenv("ADAPTIVE_CORRECT_INCREMENT", "0.05"))
@@ -38,11 +47,16 @@ class BaseConfig:
     PLAN_REVIEW_MINUTES = int(os.getenv("PLAN_REVIEW_MINUTES", "10"))
     ANALYTICS_HISTORY_DAYS = int(os.getenv("ANALYTICS_HISTORY_DAYS", "30"))
     AI_DIAGNOSTIC_ENABLE = os.getenv("AI_DIAGNOSTIC_ENABLE", "true").lower() in {"1", "true", "yes"}
-    AI_DIAGNOSTIC_MODEL = os.getenv("AI_DIAGNOSTIC_MODEL", "gpt-4.1")
+    AI_DIAGNOSTIC_MODEL = os.getenv("AI_DIAGNOSTIC_MODEL", "gpt-5.1")
     AI_PARSER_ENABLE = os.getenv("AI_PARSER_ENABLE", "true").lower() in {"1", "true", "yes"}
-    AI_PARSER_MODEL = os.getenv("AI_PARSER_MODEL", "gpt-4.1")
+    AI_PARSER_MODEL = os.getenv("AI_PARSER_MODEL", "gpt-5.1")
     AI_PDF_VISION_MODEL = os.getenv("AI_PDF_VISION_MODEL") or AI_PARSER_MODEL
     AI_PDF_NORMALIZE_MODEL = os.getenv("AI_PDF_NORMALIZE_MODEL") or AI_PARSER_MODEL
+    AI_PDF_SOLVER_MODEL = (
+        os.getenv("AI_PDF_SOLVER_MODEL")
+        or os.getenv("AI_EXPLAINER_MODEL")
+        or "gpt-5.1"
+    )
     PDF_INGEST_RESOLUTION = int(os.getenv("PDF_INGEST_RESOLUTION", "220"))
     PDF_INGEST_MAX_PAGES = int(os.getenv("PDF_INGEST_MAX_PAGES", "200"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -70,6 +84,15 @@ class BaseConfig:
     MAIL_IMAP_SERVER = os.getenv("MAIL_IMAP_SERVER", "imappro.zoho.com")
     MAIL_IMAP_PORT = int(os.getenv("MAIL_IMAP_PORT", "993"))
     MAIL_IMAP_USE_SSL = os.getenv("MAIL_IMAP_USE_SSL", "true").lower() in {"1", "true", "yes"}
+    if SQLALCHEMY_DATABASE_URI.startswith("sqlite"):
+        SQLALCHEMY_ENGINE_OPTIONS = {"poolclass": NullPool}
+    else:
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            "pool_pre_ping": True,
+            "pool_size": int(os.getenv("DB_POOL_SIZE", "5")),
+            "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "10")),
+            "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT", "30")),
+        }
 
 
 class DevConfig(BaseConfig):

@@ -15,7 +15,7 @@ class PassageSchema(Schema):
 
 class QuestionCreateSchema(Schema):
     section = fields.String(required=True, validate=validate.OneOf(SECTION_CHOICES))
-    sub_section = fields.String()
+    sub_section = fields.String(allow_none=True)
     passage_id = fields.Integer(load_default=None, allow_none=True)
     question_set_id = fields.Integer(load_default=None, allow_none=True)
     passage = fields.Nested(PassageSchema, load_default=None)
@@ -31,6 +31,7 @@ class QuestionCreateSchema(Schema):
     page = fields.String()
     index_in_set = fields.Integer()
     metadata = fields.Dict(attribute="metadata_json", data_key="metadata", load_default=None)
+    has_figure = fields.Boolean(load_default=False)
 
 
 class QuestionSchema(QuestionCreateSchema):

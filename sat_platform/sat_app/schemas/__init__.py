@@ -16,6 +16,7 @@ from .question_schema import (
 from .session_schema import (
     SessionStartSchema,
     SessionAnswerSchema,
+    SessionExplanationSchema,
     SessionSchema,
 )
 from .import_schema import ManualParseSchema, QuestionBlockSchema
@@ -31,6 +32,7 @@ __all__ = [
     "QuestionSchema",
     "SessionStartSchema",
     "SessionAnswerSchema",
+    "SessionExplanationSchema",
     "SessionSchema",
     "ManualParseSchema",
     "QuestionBlockSchema",

@@ -17,12 +17,17 @@ class SessionAnswerSchema(Schema):
     time_spent_sec = fields.Integer(load_default=None)
 
 
+class SessionExplanationSchema(Schema):
+    session_id = fields.Integer(required=True)
+    question_id = fields.Integer(required=True)
+
+
 class SessionSchema(Schema):
     id = fields.Integer(dump_only=True)
     user_id = fields.Integer(dump_only=True)
     started_at = fields.DateTime(dump_only=True)
-    ended_at = fields.DateTime(dump_only=True)
+    ended_at = fields.DateTime(dump_only=True, allow_none=True)
     questions_assigned = fields.List(fields.Dict())
-    questions_done = fields.Dict()
-    summary = fields.Dict()
+    questions_done = fields.List(fields.Dict(), dump_only=True)
+    summary = fields.Dict(dump_only=True)
 

@@ -47,6 +47,7 @@ def _register_extensions(app: Flask) -> None:
     cors.init_app(
         app,
         resources={r"/api/*": {"origins": app.config.get("CORS_ORIGINS", "*")}},
+        supports_credentials=True,
     )
     limiter.default_limits = app.config.get("RATE_LIMIT_DEFAULTS", [])
     limiter.init_app(app)
@@ -205,6 +206,61 @@ def _register_cli(app: Flask) -> None:
                 click.echo(f"Seeded accounts: {', '.join(created)}")
             else:
                 click.echo("Seed users already exist; nothing to do.")
+
+    @app.cli.group("plan")
+    def plan_group():
+        """Study plan management commands."""
+
+    @plan_group.command("generate")
+    @click.option("--user-id", type=int, help="Generate plan for a specific user ID.")
+    @click.option(
+        "--all",
+        "generate_all",
+        is_flag=True,
+        default=False,
+        help="Generate plans for all student accounts.",
+    )
+    @click.option(
+        "--date",
+        "plan_date",
+        type=click.DateTime(formats=["%Y-%m-%d"]),
+        help="Plan date (YYYY-MM-DD). Defaults to today.",
+    )
+    def generate_plan_command(user_id: int | None, generate_all: bool, plan_date):
+        """Generate study plans via CLI."""
+
+        if not generate_all and not user_id:
+            raise click.UsageError("Provide --user-id or use --all to target students.")
+        if generate_all and user_id:
+            raise click.UsageError("Use either --user-id or --all, not both.")
+
+        from werkzeug.exceptions import NotFound
+
+        from .models import User
+        from .services import learning_plan_service
+
+        target_date = plan_date.date() if plan_date else None
+
+        with app.app_context():
+            if generate_all:
+                users = User.query.filter_by(role="student").all()
+                user_ids = [u.id for u in users]
+                if not user_ids:
+                    click.echo("No student accounts found; nothing to generate.")
+                    return
+            else:
+                user_ids = [user_id]
+
+            for target_user_id in user_ids:
+                try:
+                    plan = learning_plan_service.generate_daily_plan(
+                        user_id=target_user_id, plan_date=target_date
+                    )
+                except NotFound as exc:  # pragma: no cover - defensive
+                    raise click.ClickException(f"User {target_user_id} not found.") from exc
+                click.echo(
+                    f"Generated plan for user {target_user_id} on {plan.plan_date.isoformat()}."
+                )
 
 
 def _ensure_root_admin(app: Flask) -> None:

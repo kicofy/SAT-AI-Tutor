@@ -1,0 +1,14 @@
+@reference "../../app/globals.css";
+
+.screen {
+  @apply flex min-h-screen gap-5 bg-[#030918] p-6 text-white;
+}
+
+.main {
+  @apply flex-1 flex flex-col gap-4;
+}
+
+.content {
+  @apply grid grid-cols-1 gap-5 xl:grid-cols-2;
+}
+

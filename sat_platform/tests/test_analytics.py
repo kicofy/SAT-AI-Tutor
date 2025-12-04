@@ -18,7 +18,7 @@ def question_fixture(app_with_db):
             choices={"A": "A", "B": "B"},
             correct_answer={"value": "A"},
             difficulty_level=3,
-            skill_tags=["RW_Grammar"],
+            skill_tags=["RW_StandardEnglish"],
         )
         db.session.add(q)
         db.session.commit()

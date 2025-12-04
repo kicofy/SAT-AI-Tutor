@@ -42,10 +42,11 @@ def explain():
     question = Question.query.filter_by(id=payload["question_id"]).first()
     if question is None:
         abort(404)
+    language = payload.get("user_language") or _resolve_user_language(current_user)
     explanation = ai_explainer.generate_explanation(
         question=question,
         user_answer=payload["user_answer"],
-        user_language=payload["user_language"],
+        user_language=language,
         depth=payload["depth"],
     )
     return jsonify({"explanation": explanation})
@@ -56,4 +57,17 @@ def explain():
 def diagnose():
     report = ai_diagnostic.generate_report(current_user.id)
     return jsonify({"predictor": report.predictor_payload, "narrative": report.narrative})
+
+
+def _resolve_user_language(user):
+    profile = getattr(user, "profile", None)
+    preference = getattr(profile, "language_preference", None)
+    if not preference:
+        return "en"
+    lowered = preference.lower()
+    if "zh" in lowered or "cn" in lowered:
+        return "zh"
+    if "en" in lowered:
+        return "en"
+    return preference
 

@@ -11,6 +11,7 @@ from . import (
     score_predictor,
     ai_diagnostic,
     pdf_ingest_service,
+    openai_log,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "score_predictor",
     "ai_diagnostic",
     "pdf_ingest_service",
+    "openai_log",
 ]

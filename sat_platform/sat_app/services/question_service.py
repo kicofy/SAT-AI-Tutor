@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy.orm import joinedload
 
 from ..extensions import db
-from ..models import Passage, Question
+from ..models import Passage, Question, QuestionExplanationCache, QuestionFigure
 
 
 def list_questions(page: int, per_page: int, section: Optional[str] = None):
@@ -62,6 +62,8 @@ def update_question(question: Question, payload: dict) -> Question:
 
 
 def delete_question(question: Question) -> None:
+    QuestionExplanationCache.query.filter_by(question_id=question.id).delete(synchronize_session=False)
+    QuestionFigure.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     db.session.delete(question)
     db.session.commit()
 
