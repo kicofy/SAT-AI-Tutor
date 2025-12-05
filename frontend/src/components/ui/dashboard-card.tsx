@@ -18,8 +18,8 @@ const cardVariants = cva(
 );
 
 type DashboardCardProps = VariantProps<typeof cardVariants> & {
-  title: string;
-  subtitle?: string;
+  title: ReactNode;
+  subtitle?: ReactNode;
   children: ReactNode;
 };
 

@@ -10,13 +10,7 @@ from flask import current_app
 from ..extensions import db
 from ..models import Question, SkillMastery, UserQuestionLog
 from . import spaced_repetition
-from .skill_taxonomy import (
-    canonicalize_tag,
-    canonicalize_tags,
-    describe_skill,
-    infer_section_from_tag,
-    iter_skill_tags,
-)
+from .skill_taxonomy import canonicalize_tag, canonicalize_tags, describe_skill, iter_skill_tags
 
 
 def _initial_mastery() -> float:
@@ -194,6 +188,7 @@ def select_next_questions(
     num_questions: int,
     section: str | None = None,
     *,
+    focus_skill: str | None = None,
     last_summary: dict | None = None,
 ) -> List[Question]:
     selected: List[Question] = []
@@ -219,7 +214,14 @@ def select_next_questions(
     for question in candidates:
         if question.id in seen_ids:
             continue
-        scored.append((_score_question(question, mastery_map, summary_bias), question.id, question))
+        score = _score_question(question, mastery_map, summary_bias)
+        if focus_skill:
+            tags = question.skill_tags or []
+            if focus_skill in tags:
+                score -= 0.05
+            else:
+                score += 0.05
+        scored.append((score, question.id, question))
 
     scored.sort(key=lambda entry: (entry[0], entry[1]))
 

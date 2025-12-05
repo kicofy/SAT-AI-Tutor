@@ -122,7 +122,7 @@ SAT AI Tutor is a Flask-based learning platform that pairs adaptive practice wit
      curl -X POST http://127.0.0.1:5080/api/auth/admin/create \
        -H "Authorization: Bearer <root-token>" \
        -H "Content-Type: application/json" \
-       -d '{"email":"coach@example.com","username":"coach1","password":"StrongPass123!"}'
+      -d '{"email":"tutor@example.com","username":"tutor1","password":"StrongPass123!"}'
      ```  
      Regular admins cannot call this endpoint.
 

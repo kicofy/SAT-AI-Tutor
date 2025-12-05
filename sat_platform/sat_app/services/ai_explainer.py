@@ -117,7 +117,14 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         "  * Writing Three Checks: subject-verb agreement, parallel structure, logical clarity; mantra: keep it short, simple, active, and precise.\n"
         "  * Teaching template: what is tested? where are the keywords? where is the supporting text? why is the correct option right? why are others wrong?\n"
         "  * For evidence/definition/writing items, point out the exact sentence and explain why it fits.\n"
+        "- Whenever the skill requires textual evidence (Reading) include at least two animations that highlight/underline snippets inside the passage itself—not just the stem or choices. Mark the clue words that prove the answer.\n"
+        "- For grammar / sentence structure questions, highlight the relevant part of the sentence (subject, verb, modifier, tense marker). Explicitly show how the choice fixes or breaks that structure.\n"
+        "- Prefer operating on the passage first (highlighting keywords, timeline, tone) before commenting on the question/choices so students see where the clue came from.\n"
+        "- When you populate an animation with `target: \"passage\"` or `target: \"stem\"`, you MUST copy and paste the exact contiguous characters from the passage/stem text provided. No paraphrasing or invented wording is allowed in those snippets.\n"
         "- Close the explanation by reinforcing “Reading: evidence rules, synonym = correct, speculation = wrong; Writing: clarity > brevity > correctness > style.” Translate this closing line into the requested language.\n"
+        "- For every animation that references answer choices: set target to \"choices\", always include `choice_id` (A, B, C, ...), and keep the `text` field identical to that choice’s actual wording. Provide one animation object per affected choice so only the intended options are highlighted/struck. Never rely on a shared snippet like \"influence\" that appears in multiple choices unless you also provide distinct `choice_id`s.\n"
+        "- When highlighting text from the passage/stem, quote enough surrounding words so the snippet is unique. Avoid vague markers such as “this sentence”.\n"
+        "- Before striking or eliminating a choice, explicitly verify it against the passage logic so the cue explains the precise defect (missing conjunction, shifts meaning, etc.).\n"
         "- If figures are provided, interpret them directly (they are attached as images). When an animation focuses on a figure, set target to \"figure\", provide a short `text` describing the region (e.g., '1998 Beaumont bar'), set `figure_id` to the provided numeric ID, and explain how that visual supports or eliminates a choice. Mix figure-focused steps with textual steps.\n"
     )
     if language_tag == "zh":
@@ -131,9 +138,20 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
             "\nUse these images when reasoning about the question. Reference them in animations via "
             "`target: \"figure\"` and provide the matching `figure_id` so the UI knows which chart to highlight."
         )
+    passage_text = None
+    if getattr(question, "passage", None) and getattr(question.passage, "content_text", None):
+        passage_text = question.passage.content_text
+    else:
+        metadata = getattr(question, "metadata_json", None) or {}
+        passage_text = metadata.get("passage_text") or metadata.get("passage_excerpt")
+    if passage_text:
+        passage_prompt = f"Passage text (copy exact wording for highlights):\n{passage_text}\n"
+    else:
+        passage_prompt = "Passage text: [No passage available for this item]\n"
     user_prompt = (
         f"Target language: {language_name} (language tag: {language_tag}).\n"
         f"Student answer leads to the following context:\n"
+        f"{passage_prompt}"
         f"Question stem: {question.stem_text}\n"
         f"Choices: {json.dumps(question.choices, ensure_ascii=False)}\n"
         f"Correct answer: {json.dumps(question.correct_answer, ensure_ascii=False)}\n"

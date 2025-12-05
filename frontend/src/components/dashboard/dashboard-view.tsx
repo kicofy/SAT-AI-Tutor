@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { PlanBlocks } from "@/components/dashboard/plan-blocks";
 import { MasteryProgress } from "@/components/dashboard/mastery-progress";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
-import { ProgressEntry, StudyPlanDetail } from "@/types/learning";
+import { PlanTask, ProgressEntry, StudyPlanDetail } from "@/types/learning";
 import { useI18n } from "@/hooks/use-i18n";
 
 function deriveHighlights(
@@ -14,8 +14,14 @@ function deriveHighlights(
   t: ReturnType<typeof useI18n>["t"]
 ) {
   const highlights: string[] = [];
+  const pushUnique = (text: string | undefined) => {
+    if (!text) return;
+    if (!highlights.includes(text)) {
+      highlights.push(text);
+    }
+  };
   if (plan) {
-    highlights.push(
+    pushUnique(
       t("ai.highlightTarget", {
         minutes: plan.target_minutes,
         questions: plan.target_questions,
@@ -24,14 +30,17 @@ function deriveHighlights(
   }
   if (plan?.blocks?.length) {
     const firstBlock = plan.blocks[0];
-    highlights.push(
+    pushUnique(
       t("ai.highlightFirstBlock", {
         skill: firstBlock.focus_skill_label ?? firstBlock.focus_skill,
       })
     );
   }
+  if (plan?.insights?.length) {
+    plan.insights.slice(0, 2).forEach((insight) => pushUnique(insight));
+  }
   if (latestProgress) {
-    highlights.push(
+    pushUnique(
       t("ai.highlightRecentAccuracy", {
         accuracy: Math.round(latestProgress.accuracy * 100),
         questions: latestProgress.questions_answered,
@@ -42,30 +51,40 @@ function deriveHighlights(
 }
 
 export function DashboardView() {
-  const { planQuery, masteryQuery, progressQuery } = useDashboardData();
+  const { planQuery, masteryQuery, progressQuery, tutorNotesQuery } = useDashboardData();
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState({
     plan: false,
     mastery: false,
   });
 
+  const planDetail = planQuery.data?.plan;
+  const planTaskMap = useMemo(() => {
+    const entries: Record<string, PlanTask | undefined> = {};
+    const tasks = planQuery.data?.tasks ?? planDetail?.tasks ?? [];
+    tasks.forEach((task) => {
+      entries[task.block_id] = task;
+    });
+    return entries;
+  }, [planQuery.data?.tasks, planDetail?.tasks]);
+
   const latestProgress = progressQuery.data?.[progressQuery.data.length - 1];
-  const highlights = deriveHighlights(planQuery.data, latestProgress, t);
-  const planBlocks = planQuery.data?.blocks ?? [];
+  const fallbackHighlights = deriveHighlights(planDetail, latestProgress, t);
+  const planBlocks = planDetail?.blocks ?? [];
   const sessionCount = progressQuery.data?.length ?? 0;
   const heroStats = [
     {
       label: t("plan.hero.stat.minutes"),
       value:
-        planQuery.data && typeof planQuery.data.target_minutes === "number"
-          ? `${planQuery.data.target_minutes} min`
+        planDetail && typeof planDetail.target_minutes === "number"
+          ? `${planDetail.target_minutes} min`
           : t("plan.hero.stat.placeholder"),
     },
     {
       label: t("plan.hero.stat.questions"),
       value:
-        planQuery.data && typeof planQuery.data.target_questions === "number"
-          ? `${planQuery.data.target_questions}`
+        planDetail && typeof planDetail.target_questions === "number"
+          ? `${planDetail.target_questions}`
           : t("plan.hero.stat.placeholder"),
     },
     {
@@ -103,6 +122,9 @@ export function DashboardView() {
     );
   }
 
+  const isInitialPlanLoading = planQuery.isLoading && !planQuery.data;
+  const isPlanRefreshing = planQuery.isFetching && !!planQuery.data;
+
   return (
     <AppShell>
       <div className="col-span-full mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-8">
@@ -128,12 +150,17 @@ export function DashboardView() {
           {!collapsed.plan && (
             <div className="mt-5 flex flex-col gap-5 lg:flex-row">
               <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 p-4">
-                {planQuery.isLoading ? (
-                  <p className="text-sm text-white/60">{t("plan.loading")}</p>
+                {isInitialPlanLoading ? (
+                  <PlanGeneratingState />
                 ) : planQuery.error ? (
                   <p className="text-sm text-red-400">{t("plan.error")}</p>
                 ) : planBlocks.length ? (
-                  <PlanBlocks blocks={planBlocks} />
+                  <>
+                    {isPlanRefreshing && (
+                      <p className="mb-2 text-xs text-emerald-200/80">{t("plan.refreshing")}</p>
+                    )}
+                    <PlanBlocks blocks={planBlocks} taskMap={planTaskMap} />
+                  </>
                 ) : (
                   <p className="text-sm text-white/40">{t("plan.empty")}</p>
                 )}
@@ -143,17 +170,31 @@ export function DashboardView() {
                   {t("plan.hero.highlightsTitle")}
                 </p>
                 <div className="mt-3 space-y-2 text-sm text-white/80">
-                  {planQuery.isLoading || progressQuery.isLoading ? (
+                  {isInitialPlanLoading || progressQuery.isLoading || tutorNotesQuery.isLoading ? (
                     <p className="text-white/50">{t("ai.loading")}</p>
-                  ) : highlights.length ? (
-                    highlights.slice(0, 3).map((tip, idx) => (
-                      <div key={`${tip}-${idx}`} className="flex items-start gap-2">
-                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-300" />
-                        <p>{tip}</p>
+                  ) : tutorNotesQuery.error ? (
+                    <p className="text-white/50">{t("plan.hero.highlightsEmpty")}</p>
+                  ) : (
+                    (tutorNotesQuery.data?.notes?.length
+                      ? tutorNotesQuery.data.notes
+                      : fallbackHighlights.map((text) => ({ title: "", body: text, priority: "info" }))
+                    ).slice(0, 3).map((note, idx) => (
+                      <div key={`${note.body}-${idx}`} className="space-y-1 rounded-xl border border-white/10 bg-black/10 p-2">
+                        <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-white/50">
+                          <span
+                            className={`h-1.5 w-1.5 rounded-full ${
+                              note.priority === "warning"
+                                ? "bg-amber-300"
+                                : note.priority === "success"
+                                ? "bg-emerald-400"
+                                : "bg-sky-300"
+                            }`}
+                          />
+                          {note.title || t("plan.hero.noteDefaultTitle")}
+                        </div>
+                        <p className="text-sm text-white/80">{note.body}</p>
                       </div>
                     ))
-                  ) : (
-                    <p className="text-white/50">{t("plan.hero.highlightsEmpty")}</p>
                   )}
                 </div>
               </div>
@@ -177,6 +218,31 @@ export function DashboardView() {
         </section>
       </div>
     </AppShell>
+  );
+}
+
+function PlanGeneratingState() {
+  const { t } = useI18n();
+  return (
+    <div className="space-y-4 rounded-2xl border border-dashed border-white/20 bg-black/10 p-4 text-sm text-white/70">
+      <div>
+        <p className="text-base font-semibold text-white">
+          {t("plan.generating.title")}
+        </p>
+        <p className="text-xs text-white/60">{t("plan.generating.subtitle")}</p>
+        <p className="text-xs text-white/40">{t("plan.generating.eta")}</p>
+      </div>
+      <div className="space-y-3">
+        {[0, 1, 2].map((index) => (
+          <div
+            key={index}
+            className="h-12 rounded-2xl border border-white/5 bg-white/5 px-4 py-2"
+          >
+            <div className="h-full w-full animate-pulse rounded-xl bg-white/10" />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

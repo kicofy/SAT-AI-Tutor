@@ -15,7 +15,7 @@ from . import analytics_service, score_predictor
 
 def _build_prompt(user: User, predictor_payload: dict, progress: list[dict]) -> list[dict[str, str]]:
     system_prompt = (
-        "You are an SAT diagnostics coach. Respond with JSON containing "
+        "You are an SAT diagnostics tutor. Respond with JSON containing "
         "{protocol_version, score_summary, risk_factors, recommendations_en, recommendations_zh}. "
         "Use bilingual concise wording."
     )

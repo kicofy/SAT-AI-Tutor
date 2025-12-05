@@ -14,7 +14,7 @@ from ..services import ai_question_parser, pdf_ingest_service
 
 
 def _save_draft(job: QuestionImportJob, payload: dict) -> None:
-    draft = QuestionDraft(job_id=job.id, payload=payload)
+    draft = QuestionDraft(job_id=job.id, payload=payload, source_id=job.source_id)
     db.session.add(draft)
 
 
@@ -39,6 +39,8 @@ def process_job(job_id: int) -> QuestionImportJob:
             def _progress(page_idx: int, total_pages: int, normalized_count: int, message: str | None = None) -> None:
                 job.processed_pages = page_idx
                 job.total_pages = total_pages
+                if job.source and total_pages:
+                    job.source.total_pages = total_pages
                 job.parsed_questions = normalized_count
                 job.current_page = page_idx
                 if message:

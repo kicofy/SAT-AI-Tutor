@@ -15,6 +15,7 @@ import {
   uploadDraftFigure,
   fetchDraftFigures,
   fetchOpenaiLogs,
+  clearQuestionExplanation,
 } from "@/services/admin";
 import { useAuth } from "@/hooks/use-auth";
 import { extractErrorMessage } from "@/lib/errors";
@@ -57,6 +58,13 @@ type DraftPayloadPreview = {
 type DraftPreview = {
   id: number;
   job_id: number;
+  source_id?: number | null;
+  source?: {
+    id: number;
+    filename?: string | null;
+    original_name?: string | null;
+    total_pages?: number | null;
+  } | null;
   payload?: DraftPayloadPreview;
   figure_count?: number;
 };
@@ -98,9 +106,24 @@ type OpenAILogEntry = {
 
 type QuestionRecord = {
   id: number;
+  question_uid?: string | null;
   section: string;
   sub_section?: string | null;
   stem_text?: string | null;
+  source_id?: number | null;
+  source?: {
+    id: number;
+    filename?: string | null;
+    original_name?: string | null;
+    total_pages?: number | null;
+  } | null;
+};
+
+type QuestionFilters = {
+  section?: string;
+  question_id?: number;
+  question_uid?: string;
+  source_id?: number;
 };
 
 type HandleId = "nw" | "ne" | "sw" | "se";
@@ -347,6 +370,7 @@ function FigureCropper({
 
 export default function TempImportPage() {
   const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [file, setFile] = useState<File | null>(null);
   const [uploadState, setUploadState] = useState<"idle" | "uploading">("idle");
   const [jobResult, setJobResult] = useState<unknown>(null);
@@ -363,9 +387,14 @@ export default function TempImportPage() {
   const [questions, setQuestions] = useState<QuestionRecord[]>([]);
   const [questionPage, setQuestionPage] = useState(1);
   const [questionTotal, setQuestionTotal] = useState(0);
+  const [questionFilters, setQuestionFilters] = useState<QuestionFilters>({});
+  const questionFiltersRef = useRef<QuestionFilters>({});
+  const [questionSearchValue, setQuestionSearchValue] = useState("");
+  const [sourceFilterValue, setSourceFilterValue] = useState("");
   const [questionsLoading, setQuestionsLoading] = useState(false);
   const [questionsError, setQuestionsError] = useState<string | null>(null);
   const [rowDeleteId, setRowDeleteId] = useState<number | null>(null);
+  const [clearExplainId, setClearExplainId] = useState<number | null>(null);
   const [draftDeleteId, setDraftDeleteId] = useState<number | null>(null);
   const [draftPublishId, setDraftPublishId] = useState<number | null>(null);
   const [draftActionMessage, setDraftActionMessage] = useState<string | null>(null);
@@ -379,6 +408,9 @@ export default function TempImportPage() {
   const [openaiLogs, setOpenaiLogs] = useState<OpenAILogEntry[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [questionActionNotice, setQuestionActionNotice] = useState<
+    { text: string; tone: "success" | "error" } | null
+  >(null);
 
   const getPdfQuestionNumber = useCallback((draft: DraftPreview) => {
     const payload = draft.payload || {};
@@ -469,14 +501,20 @@ export default function TempImportPage() {
     }
   }, []);
 
+  useEffect(() => {
+    questionFiltersRef.current = questionFilters;
+  }, [questionFilters]);
+
   const loadQuestions = useCallback(
-    async (page = 1) => {
+    async (page = 1, nextFilters?: QuestionFilters) => {
       try {
         setQuestionsLoading(true);
         setQuestionsError(null);
+        const filters = nextFilters ?? questionFiltersRef.current;
         const data = (await listQuestions({
           page,
           per_page: QUESTION_PAGE_SIZE,
+          ...filters,
         })) as {
           items: QuestionRecord[];
           page: number;
@@ -486,6 +524,9 @@ export default function TempImportPage() {
         setQuestions(data.items || []);
         setQuestionPage(data.page || 1);
         setQuestionTotal(data.total || 0);
+        if (nextFilters !== undefined) {
+          setQuestionFilters(nextFilters);
+        }
       } catch (error: unknown) {
         setQuestionsError(extractErrorMessage(error, "Failed to load questions"));
       } finally {
@@ -582,18 +623,18 @@ export default function TempImportPage() {
   }, [questionPage, questionTotal]);
   const hasPrevPage = questionPage > 1;
   const totalPages = Math.max(1, Math.ceil(questionTotal / QUESTION_PAGE_SIZE));
-
-  if (user && user.role !== "admin") {
-    return (
-      <AppShell>
-        <DashboardCard title="Admin Only" subtitle="">
-          <p className="text-sm text-white/60">
-            The temporary import tool is only available for administrator accounts.
-          </p>
-        </DashboardCard>
-      </AppShell>
-    );
-  }
+  const activeQuestionFilterLabel = useMemo(() => {
+    if (questionFilters.question_id) {
+      return `ID #${questionFilters.question_id}`;
+    }
+    if (questionFilters.question_uid) {
+      return `UID ${questionFilters.question_uid}`;
+    }
+    if (questionFilters.source_id) {
+      return `PDF #${questionFilters.source_id}`;
+    }
+    return null;
+  }, [questionFilters]);
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
@@ -636,16 +677,85 @@ export default function TempImportPage() {
   async function handleRowDelete(id: number) {
     try {
       setRowDeleteId(id);
+      setQuestionActionNotice(null);
       await deleteQuestion(id);
       const nextPage =
         questions.length === 1 && questionPage > 1 ? questionPage - 1 : questionPage;
       await Promise.all([loadImports(), loadQuestions(nextPage)]);
+      setQuestionActionNotice({
+        text: `Question ${id} deleted.`,
+        tone: "success",
+      });
     } catch (error: unknown) {
-      setDeleteMessage(extractErrorMessage(error, "Delete failed."));
+      setQuestionActionNotice({
+        text: extractErrorMessage(error, "Delete failed."),
+        tone: "error",
+      });
     } finally {
       setRowDeleteId(null);
     }
   }
+  async function handleClearExplanation(id: number) {
+    try {
+      setClearExplainId(id);
+      setQuestionActionNotice(null);
+      await clearQuestionExplanation(id);
+      setQuestionActionNotice({
+        text: `Cleared AI explanations for question ${id}.`,
+        tone: "success",
+      });
+    } catch (error: unknown) {
+      setQuestionActionNotice({
+        text: extractErrorMessage(error, "Failed to clear explanations."),
+        tone: "error",
+      });
+    } finally {
+      setClearExplainId(null);
+    }
+  }
+
+  async function handleQuestionSearch(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSourceFilterValue("");
+    const trimmed = questionSearchValue.trim();
+    if (!trimmed) {
+      await loadQuestions(1, {});
+      return;
+    }
+    if (/^\d+$/.test(trimmed)) {
+      await loadQuestions(1, { question_id: Number(trimmed) });
+      return;
+    }
+    await loadQuestions(1, { question_uid: trimmed });
+  }
+
+  async function handleClearQuestionFilters() {
+    setQuestionSearchValue("");
+    setSourceFilterValue("");
+    setQuestionFilters({});
+    await loadQuestions(1, {});
+  }
+
+  async function handleSourceFilter(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = sourceFilterValue.trim();
+    if (!trimmed) {
+      setQuestionFilters({});
+      await loadQuestions(1, {});
+      return;
+    }
+    if (!/^\d+$/.test(trimmed)) {
+      setQuestionActionNotice({
+        text: "PDF source ID must be numeric.",
+        tone: "error",
+      });
+      return;
+    }
+    setQuestionSearchValue("");
+    setQuestionActionNotice(null);
+    await loadQuestions(1, { source_id: Number(trimmed) });
+  }
+
 
   async function handleDraftDelete(id: number) {
     try {
@@ -923,11 +1033,13 @@ export default function TempImportPage() {
   return (
     <>
       <AppShell>
-      <DashboardCard
-        title="Temporary PDF Import"
-        subtitle="Upload a PDF and send it to the AI ingestion pipeline."
-      >
-        <form className="space-y-3" onSubmit={handleUpload}>
+        {isAdmin ? (
+          <>
+            <DashboardCard
+              title="Temporary PDF Import"
+              subtitle="Upload a PDF and send it to the AI ingestion pipeline."
+            >
+              <form className="space-y-3" onSubmit={handleUpload}>
           <input
             type="file"
             accept="application/pdf"
@@ -947,40 +1059,40 @@ export default function TempImportPage() {
               {JSON.stringify(jobResult, null, 2)}
             </pre>
           )}
-        </form>
-      </DashboardCard>
+              </form>
+            </DashboardCard>
 
-      <DashboardCard
-        title="Delete Default Question"
-        subtitle="Remove the seeded sample question by ID."
-        tone="subtle"
-      >
-        <div className="flex items-center gap-3">
-          <input
-            type="number"
-            min={1}
-            className="rounded-xl border border-white/15 bg-transparent px-4 py-2 text-sm text-white"
-            value={questionId}
-            onChange={(e) => setQuestionId(e.target.value)}
-          />
-          <button
-            className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80"
-            onClick={handleDelete}
-            disabled={deleteState === "loading"}
-          >
-            {deleteState === "loading" ? "Deleting..." : "Delete"}
-          </button>
-        </div>
-        {deleteMessage && (
-          <p className="mt-2 text-sm text-white/70">{deleteMessage}</p>
-        )}
-      </DashboardCard>
+            <DashboardCard
+              title="Delete Default Question"
+              subtitle="Remove the seeded sample question by ID."
+              tone="subtle"
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min={1}
+                  className="rounded-xl border border-white/15 bg-transparent px-4 py-2 text-sm text-white"
+                  value={questionId}
+                  onChange={(e) => setQuestionId(e.target.value)}
+                />
+                <button
+                  className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80"
+                  onClick={handleDelete}
+                  disabled={deleteState === "loading"}
+                >
+                  {deleteState === "loading" ? "Deleting..." : "Delete"}
+                </button>
+              </div>
+              {deleteMessage && (
+                <p className="mt-2 text-sm text-white/70">{deleteMessage}</p>
+              )}
+            </DashboardCard>
 
-      <DashboardCard
-        title="Import Progress"
-        subtitle="Monitor ingestion jobs and normalized drafts"
-        tone="subtle"
-      >
+            <DashboardCard
+              title="Import Progress"
+              subtitle="Monitor ingestion jobs and normalized drafts"
+              tone="subtle"
+            >
         {importsLoading ? (
           <p className="text-sm text-white/60">Loading progress...</p>
         ) : importsError ? (
@@ -1085,13 +1197,13 @@ export default function TempImportPage() {
             </div>
           </div>
         )}
-      </DashboardCard>
+            </DashboardCard>
 
-      <DashboardCard
-        title="OpenAI API Logs"
-        subtitle={`Recent OpenAI calls (latest ${OPENAI_LOG_LIMIT})`}
-        tone="subtle"
-      >
+            <DashboardCard
+              title="OpenAI API Logs"
+              subtitle={`Recent OpenAI calls (latest ${OPENAI_LOG_LIMIT})`}
+              tone="subtle"
+            >
         <div className="mb-3 flex flex-wrap items-center justify-between text-xs text-white/60">
           <span>
             Showing {openaiLogs.length} entr{openaiLogs.length === 1 ? "y" : "ies"}
@@ -1156,13 +1268,13 @@ export default function TempImportPage() {
             ))}
           </div>
         )}
-      </DashboardCard>
+            </DashboardCard>
 
-      <DashboardCard
-        title="Draft Review"
-        subtitle="Inspect AI-normalized drafts before publishing them to the live bank."
-        tone="subtle"
-      >
+            <DashboardCard
+              title="Draft Review"
+              subtitle="Inspect AI-normalized drafts before publishing them to the live bank."
+              tone="subtle"
+            >
         {draftActionMessage && (
           <p className="mb-3 text-sm text-white/70">{draftActionMessage}</p>
         )}
@@ -1191,6 +1303,11 @@ export default function TempImportPage() {
                     </p>
                     <p className="text-xs text-white/50">
                       PDF Question: {pdfQuestionNumber ?? "—"} · Local Draft ID: {localQuestionNumber}
+                    </p>
+                    <p className="text-xs text-white/50">
+                      PDF Source:{" "}
+                      {draft.source_id ? `#${draft.source_id}` : "—"}
+                      {draft.source?.filename ? ` · ${draft.source.filename}` : ""}
                     </p>
                   </div>
                   <p className="text-xs text-white/70 mb-3">
@@ -1248,13 +1365,81 @@ export default function TempImportPage() {
             )}
           </div>
         )}
-      </DashboardCard>
+            </DashboardCard>
 
-      <DashboardCard
-        title="Question Bank (Temporary)"
-        subtitle="Browse recently ingested questions and delete incorrect entries."
-        tone="subtle"
-      >
+            <DashboardCard
+              title="Question Bank (Temporary)"
+              subtitle="Browse recently ingested questions and delete incorrect entries."
+              tone="subtle"
+            >
+        <form
+          className="mb-3 flex w-full flex-col gap-2 text-sm text-white/70 md:flex-row"
+          onSubmit={handleQuestionSearch}
+        >
+          <input
+            value={questionSearchValue}
+            onChange={(e) => setQuestionSearchValue(e.target.value)}
+            placeholder="Search by numeric ID or UID (e.g., 214 or QAB12CD)"
+            className="flex-1 rounded-xl border border-white/20 bg-transparent px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/60 focus:outline-none"
+          />
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              className="rounded-xl border border-white/20 px-3 py-2 text-xs font-semibold text-white/80 hover:border-white/40"
+              disabled={questionsLoading}
+            >
+              Locate
+            </button>
+          </div>
+        </form>
+        <form
+          className="mb-3 flex w-full flex-col gap-2 text-sm text-white/70 md:flex-row"
+          onSubmit={handleSourceFilter}
+        >
+          <input
+            value={sourceFilterValue}
+            onChange={(e) => setSourceFilterValue(e.target.value)}
+            placeholder="Filter by PDF source ID (e.g., 12)"
+            className="flex-1 rounded-xl border border-white/20 bg-transparent px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/60 focus:outline-none"
+          />
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              className="rounded-xl border border-white/20 px-3 py-2 text-xs font-semibold text-white/80 hover:border-white/40"
+              disabled={questionsLoading}
+            >
+              Apply PDF filter
+            </button>
+          </div>
+        </form>
+        {(questionFilters.question_id ||
+          questionFilters.question_uid ||
+          questionFilters.source_id) && (
+          <div className="mb-2">
+            <button
+              type="button"
+              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-white/60 hover:border-white/30"
+              onClick={handleClearQuestionFilters}
+              disabled={questionsLoading}
+            >
+              Clear filters
+            </button>
+          </div>
+        )}
+        {activeQuestionFilterLabel && (
+          <p className="mb-2 text-xs text-white/60">
+            Filtering by {activeQuestionFilterLabel}. Showing newest matches first.
+          </p>
+        )}
+        {questionActionNotice && (
+          <p
+            className={`mb-2 text-xs ${
+              questionActionNotice.tone === "success" ? "text-emerald-300" : "text-red-400"
+            }`}
+          >
+            {questionActionNotice.text}
+          </p>
+        )}
         <div className="mb-3 flex flex-wrap items-center gap-3 text-sm text-white/70">
           <span>
             Page {questionPage} / {totalPages} · {questionTotal} questions
@@ -1287,13 +1472,25 @@ export default function TempImportPage() {
                 >
                   <div className="flex-1">
                     <p className="font-semibold text-white">
-                      #{question.id} · {question.section}
+                      #{question.id} · {question.question_uid ?? "No UID"} · {question.section}
                       {question.sub_section ? ` · ${question.sub_section}` : ""}
                     </p>
                     <p className="text-xs text-white/70">
                       {truncateStem(question.stem_text)}
                     </p>
+                    <p className="text-xs text-white/50">
+                      PDF Source:{" "}
+                      {question.source_id ? `#${question.source_id}` : "—"}
+                      {question.source?.filename ? ` · ${question.source.filename}` : ""}
+                    </p>
                   </div>
+                  <button
+                    className="self-start rounded-xl border border-white/20 px-3 py-1 text-xs text-white/80"
+                    onClick={() => handleClearExplanation(question.id)}
+                    disabled={clearExplainId === question.id}
+                  >
+                    {clearExplainId === question.id ? "Resetting..." : "Reset AI explanation"}
+                  </button>
                   <button
                     className="self-start rounded-xl border border-white/20 px-3 py-1 text-xs text-white/80"
                     onClick={() => handleRowDelete(question.id)}
@@ -1325,10 +1522,18 @@ export default function TempImportPage() {
             Next
           </button>
         </div>
-      </DashboardCard>
-    </AppShell>
+            </DashboardCard>
+          </>
+        ) : (
+          <DashboardCard title="Admin Only" subtitle="">
+            <p className="text-sm text-white/60">
+              The temporary import tool is only available for administrator accounts.
+            </p>
+          </DashboardCard>
+        )}
+      </AppShell>
 
-      {figureModal && (
+      {isAdmin && figureModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-6">
           <div className="w-full max-w-4xl rounded-2xl bg-[#050E1F] shadow-2xl">
             <div className="max-h-[90vh] overflow-y-auto p-5 space-y-4">

@@ -19,7 +19,15 @@ def seeded_question(app_with_db):
             correct_answer={"value": "A"},
             skill_tags=["RW_StandardEnglish"],
         )
-        db.session.add(question)
+        fallback = Question(
+            section="RW",
+            sub_section="Grammar",
+            stem_text="Fallback question text.",
+            choices={"A": "Fallback A", "B": "Fallback B"},
+            correct_answer={"value": "B"},
+            skill_tags=["RW_StandardEnglish"],
+        )
+        db.session.add_all([question, fallback])
         db.session.commit()
         return question.id
 
@@ -146,6 +154,186 @@ def test_mastery_endpoint_returns_snapshot(client, seeded_question, student_toke
     assert payload["mastery"]
 
 
+def test_active_session_reflects_question_updates(app_with_db, client, seeded_question, student_token):
+    start = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1},
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    with app_with_db.app_context():
+        question = db.session.get(Question, seeded_question)
+        question.stem_text = "Updated stem text"
+        question.choices = {"A": "Option A", "B": "Rewritten B"}
+        question.correct_answer = {"value": "B"}
+        db.session.commit()
+    active = client.get(
+        "/api/learning/session/active",
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    assert active is not None
+    refreshed = active["questions_assigned"][0]
+    assert refreshed["stem_text"] == "Updated stem text"
+    assert refreshed["choices"]["B"] == "Rewritten B"
+    assert refreshed["correct_answer"]["value"] == "B"
+
+
+def test_active_session_uses_cached_when_question_deleted(app_with_db, client, seeded_question, student_token):
+    start = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1},
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    cached = start["questions_assigned"][0]
+    with app_with_db.app_context():
+        question = db.session.get(Question, seeded_question)
+        db.session.delete(question)
+        db.session.commit()
+    active = client.get(
+        "/api/learning/session/active",
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    assert active is not None
+    fallback = active["questions_assigned"][0]
+    assert fallback["question_id"] != cached["question_id"]
+    assert fallback["stem_text"] != cached["stem_text"]
+def test_deleted_answered_question_marked_unavailable(
+    app_with_db, client, seeded_question, student_token
+):
+    start = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1},
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    question_entry = start["questions_assigned"][0]
+    client.post(
+        "/api/learning/session/answer",
+        json={
+            "session_id": start["id"],
+            "question_id": question_entry["question_id"],
+            "user_answer": {"value": "A"},
+        },
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    with app_with_db.app_context():
+        question = db.session.get(Question, seeded_question)
+        db.session.delete(question)
+        db.session.commit()
+    active = client.get(
+        "/api/learning/session/active",
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    entry = next(
+        (q for q in active["questions_assigned"] if q["question_id"] == question_entry["question_id"]),
+        None,
+    )
+    assert entry is not None
+    assert entry.get("unavailable_reason") == "question_deleted"
+
+
+def test_answer_endpoint_handles_deleted_question(
+    app_with_db, client, seeded_question, student_token
+):
+    start = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1},
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    with app_with_db.app_context():
+        question = db.session.get(Question, seeded_question)
+        db.session.delete(question)
+        db.session.commit()
+    resp = client.post(
+        "/api/learning/session/answer",
+        json={
+            "session_id": start["id"],
+            "question_id": start["questions_assigned"][0]["question_id"],
+            "user_answer": {"value": "A"},
+        },
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert resp.status_code == 409
+    payload = resp.get_json()
+    assert payload["error"] == "question_reassigned"
+    assert payload["session"]["questions_assigned"]
+    assert payload["session"]["questions_assigned"][0]["question_id"] != seeded_question
+
+
+def test_answer_endpoint_reports_unavailable_when_bank_empty(
+    app_with_db, client, seeded_question, student_token
+):
+    start = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1},
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    with app_with_db.app_context():
+        Question.query.delete()
+        db.session.commit()
+    resp = client.post(
+        "/api/learning/session/answer",
+        json={
+            "session_id": start["id"],
+            "question_id": start["questions_assigned"][0]["question_id"],
+            "user_answer": {"value": "A"},
+        },
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert resp.status_code == 409
+    payload = resp.get_json()
+    assert payload["error"] == "question_unavailable"
+    assert "session" not in payload
+
+
+def test_tutor_notes_endpoint_returns_cached(client, student_token, monkeypatch):
+    calls = {"count": 0}
+
+    def fake_call_ai(*args, **kwargs):
+        calls["count"] += 1
+        return {
+            "notes": [
+                {"title": "Focus", "body": "Do RW first", "priority": "info"},
+            ]
+        }
+
+    monkeypatch.setattr("sat_app.services.tutor_notes_service._call_ai", fake_call_ai)
+
+    resp = client.get(
+        "/api/learning/tutor-notes/today",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["notes"][0]["title"] == "Focus"
+    assert calls["count"] == 1
+
+    # Second call should return cached result without invoking AI again
+    resp2 = client.get(
+        "/api/learning/tutor-notes/today",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert resp2.status_code == 200
+    assert calls["count"] == 1
+
+
+def test_tutor_notes_fallback_when_disabled(app_with_db, client, student_token, monkeypatch):
+    with app_with_db.app_context():
+        original = app_with_db.config.get("AI_TUTOR_NOTES_ENABLE", True)
+        app_with_db.config["AI_TUTOR_NOTES_ENABLE"] = False
+    try:
+        resp = client.get(
+            "/api/learning/tutor-notes/today",
+            headers={"Authorization": f"Bearer {student_token}"},
+        )
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload["notes"]
+        assert all("title" in note for note in payload["notes"])
+        assert any("New" in note["title"] or "新用户" in note["title"] for note in payload["notes"])
+    finally:
+        with app_with_db.app_context():
+            app_with_db.config["AI_TUTOR_NOTES_ENABLE"] = original
+
+
 def test_plan_endpoints(client, seeded_question, student_token, monkeypatch):
     monkeypatch.setattr(
         "sat_app.services.ai_explainer.generate_explanation",
@@ -176,7 +364,7 @@ def test_plan_endpoints(client, seeded_question, student_token, monkeypatch):
     )
     assert resp.status_code == 200
     plan = resp.get_json()["plan"]
-    assert plan["protocol_version"] == "plan.v1"
+    assert plan["protocol_version"] == "plan.v2"
 
     regen = client.post(
         "/api/learning/plan/regenerate",

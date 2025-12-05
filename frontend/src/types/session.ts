@@ -18,6 +18,7 @@ export type QuestionAnswer = {
 
 export type SessionQuestion = {
   question_id: number;
+  question_uid?: string;
   stem_text: string;
   choices: Record<string, string>;
   section: string;
@@ -26,6 +27,8 @@ export type SessionQuestion = {
   has_figure?: boolean;
   figures?: QuestionFigureRef[];
   correct_answer?: QuestionAnswer;
+  skill_tags?: string[];
+  unavailable_reason?: string;
 };
 
 export type SessionProgressEntry = {
@@ -42,6 +45,7 @@ export type Session = {
   questions_done?: SessionProgressEntry[];
   started_at?: string;
   ended_at?: string | null;
+  plan_block_id?: string | null;
 };
 
 export type StartSessionPayload = {

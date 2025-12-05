@@ -32,7 +32,12 @@ function formatMessage(template: string, values?: Values) {
 }
 
 export function LocaleProvider({ children }: PropsWithChildren) {
-  const [locale, setLocaleState] = useState<Locale>(() => getStoredLocale());
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    if (typeof window === "undefined") {
+      return "en";
+    }
+    return getStoredLocale();
+  });
 
   useEffect(() => {
     const handler = (event: Event) => {

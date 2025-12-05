@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { DashboardCard } from "@/components/ui/dashboard-card";
 import {
   abortSession,
@@ -11,8 +13,8 @@ import {
   startSession,
   submitAnswer,
 } from "@/services/session";
-import { getTodayPlan } from "@/services/learning";
-import { StudyPlanDetail } from "@/types/learning";
+import { getTodayPlan, startPlanTask } from "@/services/learning";
+import { PlanTask, StudyPlanDetail } from "@/types/learning";
 import {
   Session,
   SessionQuestion,
@@ -24,10 +26,15 @@ import { AxiosError } from "axios";
 import { env } from "@/lib/env";
 import { getClientToken } from "@/lib/auth-storage";
 import { useI18n } from "@/hooks/use-i18n";
+import { useAuthStore } from "@/stores/auth-store";
 
 const API_BASE_URL = (env.apiBaseUrl || "").replace(/\/$/, "");
 
 type ViewState = "prep" | "loading" | "active";
+
+type PracticeViewProps = {
+  planBlockId?: string;
+};
 
 type StepDirective = {
   target: "passage" | "stem" | "choices" | "figure";
@@ -72,9 +79,13 @@ const DEFAULT_MAX_QUESTIONS = 12;
 const keyForQuestion = (sessionId: number, questionId: number) =>
   `${sessionId}-${questionId}`;
 
-export function PracticeView() {
-  const { t, locale } = useI18n();
-  const [viewState, setViewState] = useState<ViewState>("prep");
+export function PracticeView({ planBlockId }: PracticeViewProps = {}) {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const router = useRouter();
+  const isPlanTaskMode = Boolean(planBlockId);
+  const userId = useAuthStore((state) => state.user?.id);
+  const [viewState, setViewState] = useState<ViewState>(isPlanTaskMode ? "loading" : "prep");
   const [session, setSession] = useState<Session | null>(null);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -84,6 +95,7 @@ export function PracticeView() {
   >({});
   const [prepConfig, setPrepConfig] = useState({ section: "RW", num_questions: 5 });
   const [planDetail, setPlanDetail] = useState<StudyPlanDetail | null>(null);
+  const [planTasksMap, setPlanTasksMap] = useState<Record<string, PlanTask>>({});
   const [planError, setPlanError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [completionMessage, setCompletionMessage] = useState<string | null>(null);
@@ -96,9 +108,34 @@ export function PracticeView() {
   const [isAbortDialogOpen, setAbortDialogOpen] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
   const [isAborting, setIsAborting] = useState(false);
-  const handleBackToPrep = useCallback(() => {
-    setViewState("prep");
+  const [planTask, setPlanTask] = useState<PlanTask | null>(null);
+
+  const pruneProgressForSession = useCallback((nextSession: Session) => {
+    setQuestionProgress((prev) => {
+      const allowed = new Set(
+        nextSession.questions_assigned.map((question) =>
+          keyForQuestion(nextSession.id, question.question_id)
+        )
+      );
+      if (!Object.keys(prev).length) {
+        return prev;
+      }
+      const nextEntries: Record<string, QuestionProgress> = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        if (allowed.has(key)) {
+          nextEntries[key] = value;
+        }
+      });
+      return nextEntries;
+    });
   }, []);
+  const handleBackToPrep = useCallback(() => {
+    if (planBlockId) {
+      router.push("/");
+      return;
+    }
+    setViewState("prep");
+  }, [planBlockId, router]);
 
   const sectionOptions = useMemo(
     () => [
@@ -115,14 +152,20 @@ export function PracticeView() {
         short: t("practice.section.math.short"),
       },
     ],
-    [t, locale]
+    [t]
   );
 
   useEffect(() => {
+    setPlanDetail(null);
+    setPlanTasksMap({});
+    if (!userId) {
+      return;
+    }
     let mounted = true;
     getTodayPlan()
-      .then((detail) => {
+      .then((payload) => {
         if (!mounted) return;
+        const detail = payload.plan;
         setPlanDetail(detail);
         const targetQuestions = detail.target_questions ?? DEFAULT_MAX_QUESTIONS;
         const allowedMax = Math.max(DEFAULT_MAX_QUESTIONS, targetQuestions);
@@ -134,6 +177,12 @@ export function PracticeView() {
             allowedMax
           ),
         }));
+        const taskEntries: Record<string, PlanTask> = {};
+        payload.tasks?.forEach((task) => {
+          taskEntries[task.block_id] = task;
+        });
+        setPlanTasksMap(taskEntries);
+        setPlanError(null);
       })
       .catch(() => {
         if (!mounted) return;
@@ -142,9 +191,12 @@ export function PracticeView() {
     return () => {
       mounted = false;
     };
-  }, [t]);
+  }, [t, userId]);
 
   useEffect(() => {
+    if (planBlockId || !userId) {
+      return;
+    }
     let mounted = true;
     getActiveSession()
       .then(async (active) => {
@@ -162,7 +214,7 @@ export function PracticeView() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [planBlockId, userId]);
 
   useEffect(() => {
     setMediaToken(getClientToken());
@@ -206,6 +258,20 @@ export function PracticeView() {
       ? `${baseLabel} · ${currentQuestion.sub_section}`
       : baseLabel;
   }, [currentQuestion, t]);
+
+  const questionReference = useMemo(() => {
+    if (!currentQuestion) {
+      return "";
+    }
+    const displayUid =
+      currentQuestion.question_uid || `Q${String(currentQuestion.question_id).padStart(6, "0")}`;
+    return `${displayUid} · #${currentQuestion.question_id}`;
+  }, [currentQuestion]);
+
+  const isQuestionUnavailable = Boolean(currentQuestion?.unavailable_reason);
+  const questionUnavailableMessage = currentQuestion?.unavailable_reason
+    ? t("practice.unavailable.message")
+    : "";
 
   useEffect(() => {
     if (!explanation) {
@@ -269,7 +335,35 @@ useEffect(() => {
     return sectionOptions.find((item) => item.id === prepConfig.section)?.short || "";
   }, [sectionOptions, prepConfig.section]);
 
+  const planBlockDetail = useMemo(() => {
+    if (!planBlockId || !planDetail?.blocks) {
+      return null;
+    }
+    return planDetail.blocks.find((block) => block.block_id === planBlockId) ?? null;
+  }, [planBlockId, planDetail]);
+
+  const planTaskProgress = useMemo(() => {
+    if (!isPlanTaskMode) {
+      return null;
+    }
+    const completed =
+      session?.questions_done?.length ??
+      planTask?.questions_completed ??
+      planTasksMap[planBlockId || ""]?.questions_completed ??
+      0;
+    const total =
+      planTask?.questions_target ??
+      planBlockDetail?.questions ??
+      session?.questions_assigned.length ??
+      planTasksMap[planBlockId || ""]?.questions_target ??
+      0;
+    return { completed, total };
+  }, [isPlanTaskMode, planTask, planTasksMap, planBlockDetail, planBlockId, session]);
+
   const attemptStart = useCallback(async (): Promise<boolean> => {
+    if (planBlockId) {
+      return false;
+    }
     const clampedCount = Math.min(
       Math.max(Number(prepConfig.num_questions), MIN_QUESTIONS),
       maxQuestions
@@ -313,10 +407,11 @@ useEffect(() => {
     setError(t("practice.error.activeSession"));
     setViewState("prep");
     return false;
-  }, [prepConfig.num_questions, prepConfig.section, maxQuestions, t]);
+  }, [planBlockId, prepConfig.num_questions, prepConfig.section, maxQuestions, t]);
 
   async function handleStart(e: React.FormEvent) {
     e.preventDefault();
+    if (planBlockId) return;
     setCompletionMessage(null);
     setError(null);
     setViewState("loading");
@@ -343,6 +438,27 @@ useEffect(() => {
         },
       }));
     } catch (err: unknown) {
+      if (err instanceof AxiosError && err.response?.status === 409) {
+        const payload = err.response.data;
+        if (payload?.error === "question_reassigned" && payload.session) {
+          const refreshed = payload.session as Session;
+          setSession(refreshed);
+          pruneProgressForSession(refreshed);
+          setCurrentIndex((prev) =>
+            Math.min(prev, Math.max(refreshed.questions_assigned.length - 1, 0))
+          );
+          setSelectedChoice(null);
+          setError(t("practice.error.questionReassigned"));
+          setViewState("active");
+          return;
+        }
+        if (payload?.error === "question_unavailable") {
+          setSession(null);
+          setViewState("prep");
+          setError(t("practice.error.questionUnavailable"));
+          return;
+        }
+      }
       setError(extractErrorMessage(err, t("practice.error.check")));
     } finally {
       setIsChecking(false);
@@ -484,6 +600,40 @@ useEffect(() => {
     [buildProgressMapFromEntries, findFirstIncompleteIndex]
   );
 
+  useEffect(() => {
+    if (!planBlockId) {
+      return;
+    }
+    let cancelled = false;
+    setError(null);
+    setCompletionMessage(null);
+    setPlanTask(null);
+    setViewState("loading");
+    startPlanTask(planBlockId)
+      .then(({ session: newSession, task }) => {
+        if (cancelled) return;
+        setPlanTask(task);
+        resumeFromSession(newSession);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        if (err instanceof AxiosError && err.response?.status === 400) {
+          const payload = err.response.data;
+          if (payload?.error === "no_questions_for_block") {
+            setError(t("practice.error.planBlockEmpty"));
+          } else {
+            setError(extractErrorMessage(err, t("practice.error.start")));
+          }
+        } else {
+          setError(extractErrorMessage(err, t("practice.error.start")));
+        }
+        setViewState("prep");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [planBlockId, resumeFromSession, t]);
+
   const handleAbortActiveSession = useCallback(async () => {
     if (!activeSession) {
       setAbortDialogOpen(false);
@@ -508,18 +658,34 @@ useEffect(() => {
       setQuestionProgress({});
       setSelectedChoice(null);
       setActiveDirectives([]);
-      setViewState("prep");
+      setViewState(isPlanTaskMode ? "loading" : "prep");
       setCompletionMessage(t("practice.session.complete"));
       setActiveSession(null);
       setCurrentIndex(0);
+      if (isPlanTaskMode) {
+        setPlanTask((prev) =>
+          prev
+            ? { ...prev, status: "completed", questions_completed: prev.questions_target }
+            : prev
+        );
+        if (userId) {
+          await queryClient
+            .invalidateQueries({ queryKey: ["plan-today", userId] })
+            .catch(() => undefined);
+        }
+        router.push("/");
+      }
     } finally {
       setIsFinishing(false);
       setFinishDialogOpen(false);
     }
-  }, [session, t]);
+  }, [session, isPlanTaskMode, t, queryClient, router, userId]);
 
   const handleSelectChoice = useCallback(
     (choiceKey: string) => {
+      if (currentQuestion?.unavailable_reason) {
+        return;
+      }
       setSelectedChoice(choiceKey);
       if (!session || !currentQuestion) return;
       const key = keyForQuestion(session.id, currentQuestion.question_id);
@@ -537,23 +703,35 @@ useEffect(() => {
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-0">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        {viewState === "prep" ? (
+        {isPlanTaskMode ? (
           <Link
             href="/"
             className="inline-flex items-center gap-2 text-sm font-semibold text-white/80 transition hover:text-white"
           >
             <span aria-hidden="true">←</span>
-            {t("practice.nav.back")}
+            {t("practice.nav.backPlan")}
           </Link>
         ) : (
-          <button
-            type="button"
-            onClick={handleBackToPrep}
-            className="inline-flex items-center gap-2 text-sm font-semibold text-white/80 transition hover:text-white"
-          >
-            <span aria-hidden="true">←</span>
-            {t("practice.nav.backPrep")}
-          </button>
+          <>
+            {viewState === "prep" ? (
+              <Link
+                href="/"
+                className="inline-flex items-center gap-2 text-sm font-semibold text-white/80 transition hover:text-white"
+              >
+                <span aria-hidden="true">←</span>
+                {t("practice.nav.back")}
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={handleBackToPrep}
+                className="inline-flex items-center gap-2 text-sm font-semibold text-white/80 transition hover:text-white"
+              >
+                <span aria-hidden="true">←</span>
+                {t("practice.nav.backPrep")}
+              </button>
+            )}
+          </>
         )}
         <div className="flex flex-wrap gap-3">
           {summaryStats.map((stat) => (
@@ -569,7 +747,29 @@ useEffect(() => {
       </div>
       <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start">
         <div className="space-y-6">
-      {viewState === "prep" && session && (
+          {isPlanTaskMode && planBlockDetail && (
+            <DashboardCard
+              title={t("practice.planTask.title")}
+              subtitle={planBlockDetail.focus_skill_label ?? planBlockDetail.focus_skill}
+            >
+              <p className="text-sm text-white/70">
+                {t("practice.planTask.meta", {
+                  section: planBlockDetail.section,
+                  minutes: planBlockDetail.minutes,
+                  questions: planBlockDetail.questions,
+                })}
+              </p>
+              {planTaskProgress ? (
+                <p className="mt-2 text-sm font-semibold text-white">
+                  {t("practice.planTask.progress", {
+                    completed: planTaskProgress.completed,
+                    total: planTaskProgress.total,
+                  })}
+                </p>
+              ) : null}
+            </DashboardCard>
+          )}
+      {!isPlanTaskMode && viewState === "prep" && session && (
         <DashboardCard
           title={t("practice.resume.title")}
           subtitle={t("practice.resume.subtitle", { remaining: localSessionStats.remaining })}
@@ -598,7 +798,7 @@ useEffect(() => {
           </div>
         </DashboardCard>
       )}
-      {viewState === "prep" && activeSession && !session && (
+      {!isPlanTaskMode && viewState === "prep" && activeSession && !session && (
         <DashboardCard
           title={t("practice.resume.title")}
           subtitle={t("practice.resume.subtitle", { remaining: activeRemaining })}
@@ -628,7 +828,7 @@ useEffect(() => {
           </div>
         </DashboardCard>
       )}
-      {viewState !== "active" && (
+      {!isPlanTaskMode && viewState !== "active" && (
         <DashboardCard
           title={t("practice.getReady.title")}
           subtitle={t("practice.getReady.subtitle")}
@@ -725,7 +925,14 @@ useEffect(() => {
             current: currentIndex + 1,
             total: session.questions_assigned.length,
           })}
-          subtitle={sectionLabel}
+          subtitle={
+            <span className="flex flex-wrap items-center gap-3">
+              <span>{sectionLabel}</span>
+              <span className="text-[11px] uppercase tracking-wide text-white/40">
+                {t("practice.meta.questionId", { id: questionReference || "—" })}
+              </span>
+            </span>
+          }
           tone="subtle"
         >
         <div className="mb-4 flex items-center justify-between text-xs text-white/60">
@@ -802,6 +1009,11 @@ useEffect(() => {
                   className="text-white text-base font-semibold whitespace-pre-wrap"
                 />
               </div>
+              {isQuestionUnavailable && questionUnavailableMessage && (
+                <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+                  {questionUnavailableMessage}
+                </div>
+              )}
             </div>
             <div className="space-y-2">
               {Object.entries(currentQuestion.choices).map(([key, text]) => {
@@ -832,7 +1044,11 @@ useEffect(() => {
                   <button
                     key={key}
                     onClick={() => handleSelectChoice(key)}
+                    disabled={isQuestionUnavailable}
                     className={`w-full rounded-xl border px-4 py-2 text-left text-sm transition ${
+                      isQuestionUnavailable
+                        ? "cursor-not-allowed opacity-50"
+                        :
                       selectedChoice === key
                         ? "border-white/80 text-white"
                         : hasChecked && currentProgress?.isCorrect && currentProgress?.userChoice === key
@@ -877,7 +1093,7 @@ useEffect(() => {
                 <div className="flex flex-wrap gap-3">
                   <button
                     className="rounded-xl bg-white/90 px-4 py-2 text-sm font-semibold text-[#050E1F] disabled:opacity-40"
-                    disabled={!selectedChoice || isChecking}
+                    disabled={!selectedChoice || isChecking || isQuestionUnavailable}
                     onClick={handleCheckAnswer}
                   >
                     {isChecking ? t("practice.button.checking") : t("practice.button.check")}
@@ -1200,7 +1416,7 @@ function ExplanationViewer({
         board_notes: [],
       },
     ];
-  }, [rawSteps, explanation.summary]);
+  }, [rawSteps, explanation.summary, t]);
   const language = explanation.language ?? "en";
   const [currentStep, setCurrentStep] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);

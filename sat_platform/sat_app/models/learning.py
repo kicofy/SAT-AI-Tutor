@@ -21,8 +21,10 @@ class StudySession(db.Model):
     questions_assigned = db.Column(db.JSON, nullable=False)
     questions_done = db.Column(db.JSON, nullable=True)
     summary = db.Column(db.JSON, nullable=True)
+    plan_block_id = db.Column(db.String(128), index=True)
 
     user = db.relationship("User", backref="study_sessions")
+    plan_task = db.relationship("StudyPlanTask", back_populates="session", uselist=False)
 
 
 class UserQuestionLog(db.Model):
@@ -88,6 +90,32 @@ class StudyPlan(db.Model):
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     user = db.relationship("User", backref="study_plans")
+
+
+class StudyPlanTask(db.Model):
+    __tablename__ = "study_plan_tasks"
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "plan_date", "block_id", name="uq_plan_task_block"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    plan_date = db.Column(db.Date, nullable=False, index=True)
+    block_id = db.Column(db.String(128), nullable=False)
+    section = db.Column(db.String(32), nullable=False)
+    focus_skill = db.Column(db.String(128))
+    questions_target = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="pending")
+    session_id = db.Column(db.Integer, db.ForeignKey("study_sessions.id"))
+    started_at = db.Column(db.DateTime(timezone=True))
+    completed_at = db.Column(db.DateTime(timezone=True))
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    user = db.relationship("User", backref="study_plan_tasks")
+    session = db.relationship("StudySession", back_populates="plan_task")
 
 
 class DailyMetric(db.Model):

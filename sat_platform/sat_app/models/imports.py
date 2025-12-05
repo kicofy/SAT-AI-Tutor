@@ -26,6 +26,7 @@ class QuestionImportJob(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    source_id = db.Column(db.Integer, db.ForeignKey("question_sources.id"), nullable=True, index=True)
     filename = db.Column(db.String(255), nullable=True)
     source_path = db.Column(db.String(512), nullable=True)
     payload_json = db.Column(db.JSON, nullable=True)
@@ -43,10 +44,12 @@ class QuestionImportJob(db.Model):
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     user = db.relationship("User", backref="question_import_jobs")
+    source = db.relationship("QuestionSource", back_populates="jobs")
 
     def serialize(self) -> dict:
         return {
             "id": self.id,
+            "source_id": self.source_id,
             "filename": self.filename,
             "ingest_strategy": self.ingest_strategy,
             "status": self.status,
@@ -60,6 +63,17 @@ class QuestionImportJob(db.Model):
             "error_message": self.error_message,
             "created_at": _isoformat(self.created_at),
             "updated_at": _isoformat(self.updated_at),
+            "source": self._serialize_source(),
+        }
+
+    def _serialize_source(self) -> dict | None:
+        if not self.source:
+            return None
+        return {
+            "id": self.source.id,
+            "filename": self.source.filename,
+            "original_name": self.source.original_name,
+            "total_pages": self.source.total_pages,
         }
 
 
@@ -68,12 +82,14 @@ class QuestionDraft(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     job_id = db.Column(db.Integer, db.ForeignKey("question_import_jobs.id"), nullable=False, index=True)
+    source_id = db.Column(db.Integer, db.ForeignKey("question_sources.id"), nullable=True, index=True)
     payload = db.Column(db.JSON, nullable=False)
     is_verified = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     job = db.relationship("QuestionImportJob", backref="drafts")
+    source = db.relationship("QuestionSource", back_populates="drafts")
     figures = db.relationship(
         QuestionFigure,
         backref="draft",

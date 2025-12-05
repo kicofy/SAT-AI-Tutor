@@ -9,6 +9,7 @@ from flask_jwt_extended import current_user, jwt_required
 from marshmallow import ValidationError
 
 from sqlalchemy.exc import IntegrityError
+from werkzeug.exceptions import BadRequest
 
 from ..models import Question, StudySession, UserQuestionLog, QuestionExplanationCache, QuestionFigure
 from pathlib import Path
@@ -19,10 +20,7 @@ from ..schemas import (
     SessionExplanationSchema,
 )
 from ..services import session_service, ai_explainer, adaptive_engine
-from ..services.learning_plan_service import (
-    get_or_generate_plan,
-    generate_daily_plan,
-)
+from ..services import learning_plan_service, tutor_notes_service
 from ..extensions import db
 
 learning_bp = Blueprint("learning_bp", __name__)
@@ -49,6 +47,7 @@ def start_session():
     payload = start_schema.load(request.get_json() or {})
     existing = session_service.get_active_session(current_user.id)
     if existing:
+        session_service.refresh_assigned_questions(existing)
         return (
             jsonify(
                 {
@@ -76,7 +75,26 @@ def answer_question():
     session = StudySession.query.filter_by(id=payload["session_id"], user_id=current_user.id).first_or_404()
     question = Question.query.filter_by(id=payload["question_id"]).first()
     if question is None:
-        abort(404)
+        refreshed = session_service.refresh_assigned_questions(session)
+        if not refreshed.questions_assigned:
+            return (
+                jsonify(
+                    {
+                        "error": "question_unavailable",
+                        "message": "No questions available for this session. Please start a new practice set.",
+                    }
+                ),
+                HTTPStatus.CONFLICT,
+            )
+        return (
+            jsonify(
+                {
+                    "error": "question_reassigned",
+                    "session": session_schema.dump(refreshed),
+                }
+            ),
+            HTTPStatus.CONFLICT,
+        )
     log = session_service.log_answer(session, question, payload, current_user.id)
     db.session.commit()
     return jsonify({"is_correct": log.is_correct, "log_id": log.id})
@@ -189,6 +207,7 @@ def active_session():
     session = session_service.get_active_session(current_user.id)
     if not session:
         return jsonify({"session": None})
+    session_service.refresh_assigned_questions(session)
     return jsonify({"session": session_schema.dump(session)})
 
 
@@ -202,16 +221,55 @@ def mastery_snapshot():
 @learning_bp.get("/plan/today")
 @jwt_required()
 def plan_today():
-    plan = get_or_generate_plan(current_user.id)
-    return jsonify({"plan": plan.generated_detail})
+    plan, tasks = learning_plan_service.get_plan_with_tasks(current_user.id)
+    return jsonify({"plan": plan.generated_detail, "tasks": tasks})
 
 
 @learning_bp.post("/plan/regenerate")
 @jwt_required()
 def plan_regenerate():
-    plan = generate_daily_plan(current_user.id)
-    return jsonify({"plan": plan.generated_detail})
+    plan = learning_plan_service.generate_daily_plan(current_user.id)
+    _, tasks = learning_plan_service.get_plan_with_tasks(current_user.id, plan.plan_date)
+    return jsonify({"plan": plan.generated_detail, "tasks": tasks})
 
+
+@learning_bp.get("/plan/tasks")
+@jwt_required()
+def plan_tasks():
+    _, tasks = learning_plan_service.get_plan_with_tasks(current_user.id)
+    return jsonify({"tasks": tasks})
+
+
+@learning_bp.post("/plan/tasks/<string:block_id>/start")
+@jwt_required()
+def plan_task_start(block_id: str):
+    try:
+        session, task = learning_plan_service.start_plan_task(current_user.id, block_id)
+    except BadRequest as exc:
+        return (
+            jsonify(
+                {
+                    "error": "no_questions_for_block",
+                    "message": str(exc),
+                }
+            ),
+            HTTPStatus.BAD_REQUEST,
+        )
+    session_service.refresh_assigned_questions(session)
+    return jsonify({"session": session_schema.dump(session), "task": task})
+
+
+@learning_bp.get("/tutor-notes/today")
+@jwt_required()
+def tutor_notes_today():
+    notes = tutor_notes_service.get_or_generate_tutor_notes(current_user.id)
+    return jsonify(notes)
+
+
+@learning_bp.get("/coach-notes/today")
+@jwt_required()
+def coach_notes_legacy():
+    return tutor_notes_today()
 
 def _resolve_user_language(user):
     profile = getattr(user, "profile", None)

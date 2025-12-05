@@ -93,13 +93,10 @@ if (typeof window !== "undefined") {
 }
 
 function applyLocalePreference(user?: User | null) {
-  if (!user?.profile?.language_preference) {
-    return;
-  }
-  const pref = user.profile.language_preference.toLowerCase();
-  if (pref.includes("zh")) {
+  const pref = user?.profile?.language_preference?.toLowerCase();
+  if (pref && pref.includes("zh")) {
     persistLocale("zh");
-  } else if (pref.includes("en")) {
+  } else {
     persistLocale("en");
   }
 }

@@ -20,7 +20,14 @@ from marshmallow import ValidationError
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import QuestionDraft, QuestionFigure, QuestionImportJob
+from ..models import (
+    QuestionDraft,
+    QuestionFigure,
+    QuestionImportJob,
+    QuestionExplanationCache,
+    QuestionSource,
+    UserQuestionLog,
+)
 from ..schemas import ManualParseSchema, QuestionCreateSchema, QuestionSchema
 from ..services import question_service, openai_log
 from ..services.skill_taxonomy import canonicalize_tags
@@ -33,6 +40,29 @@ question_create_schema = QuestionCreateSchema()
 question_schema = QuestionSchema()
 manual_parse_schema = ManualParseSchema()
 FIGURE_DIR_NAME = "question_figures"
+
+
+def _create_question_source(*, filename: str, stored_path: Path, uploader_id: int, original_name: str | None = None) -> QuestionSource:
+    source = QuestionSource(
+        filename=filename,
+        original_name=original_name or filename,
+        stored_path=str(stored_path),
+        uploaded_by=uploader_id,
+    )
+    db.session.add(source)
+    db.session.flush()
+    return source
+
+
+def _serialize_source(source: QuestionSource | None) -> dict | None:
+    if not source:
+        return None
+    return {
+        "id": source.id,
+        "filename": source.filename,
+        "original_name": source.original_name,
+        "total_pages": source.total_pages,
+    }
 
 
 def _coerce_draft_payload(payload: dict | None) -> dict:
@@ -242,7 +272,12 @@ def list_questions():
     page = int(request.args.get("page", 1))
     per_page = min(int(request.args.get("per_page", 20)), 100)
     section = request.args.get("section")
-    pagination = question_service.list_questions(page, per_page, section)
+    question_uid = request.args.get("question_uid")
+    question_id = request.args.get("question_id", type=int)
+    source_id = request.args.get("source_id", type=int)
+    pagination = question_service.list_questions(
+        page, per_page, section, question_uid, question_id, source_id
+    )
     return jsonify(
         {
             "items": question_schema.dump(pagination.items, many=True),
@@ -291,6 +326,22 @@ def delete_question(question_id: int):
     question = question_service.get_question(question_id)
     question_service.delete_question(question)
     return "", HTTPStatus.NO_CONTENT
+
+
+@admin_bp.post("/questions/<int:question_id>/explanations/clear")
+@jwt_required()
+def clear_question_explanations(question_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    question = question_service.get_question(question_id)
+    cache_deleted = QuestionExplanationCache.query.filter_by(question_id=question.id).delete(
+        synchronize_session=False
+    )
+    UserQuestionLog.query.filter_by(question_id=question.id).update(
+        {"explanation": None, "viewed_explanation": False}, synchronize_session=False
+    )
+    db.session.commit()
+    return jsonify({"message": "Cleared cached explanations", "deleted": cache_deleted}), HTTPStatus.OK
 
 
 def _serialize_job(job: QuestionImportJob):
@@ -364,10 +415,17 @@ def ingest_pdf_questions():
     upload_dir.mkdir(parents=True, exist_ok=True)
     path = upload_dir / filename
     file.save(path)
+    source = _create_question_source(
+        filename=filename,
+        stored_path=path,
+        uploader_id=current_user.id,
+        original_name=file.filename,
+    )
     job = QuestionImportJob(
         user_id=current_user.id,
         filename=filename,
         source_path=str(path),
+        source_id=source.id,
         ingest_strategy="vision_pdf",
     )
     db.session.add(job)
@@ -414,6 +472,8 @@ def list_imports():
                 {
                     "id": draft.id,
                     "job_id": draft.job_id,
+                    "source_id": draft.source_id,
+                    "source": _serialize_source(draft.source),
                     "is_verified": draft.is_verified,
                     "payload": draft.payload,
                     "figure_count": draft.figures.count(),
@@ -588,6 +648,8 @@ def publish_draft(draft_id: int):
             HTTPStatus.BAD_REQUEST,
         )
     question_payload = question_create_schema.load(payload)
+    if draft.source_id and not question_payload.get("source_id"):
+        question_payload["source_id"] = draft.source_id
     question = question_service.create_question(question_payload)
     if requires_figure:
         question.has_figure = True
@@ -614,11 +676,6 @@ def cancel_import(job_id: int):
         for figure in draft.figures.all():
             _delete_figure_file(figure)
         db.session.delete(draft)
-    if job.source_path:
-        try:
-            Path(job.source_path).unlink(missing_ok=True)
-        except OSError:
-            pass
     db.session.delete(job)
     db.session.commit()
     job_event_broker.publish({"type": "job_removed", "payload": {"id": job_id}})

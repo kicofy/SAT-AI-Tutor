@@ -30,4 +30,5 @@ class SessionSchema(Schema):
     questions_assigned = fields.List(fields.Dict())
     questions_done = fields.List(fields.Dict(), dump_only=True)
     summary = fields.Dict(dump_only=True)
+    plan_block_id = fields.String(dump_only=True)
 

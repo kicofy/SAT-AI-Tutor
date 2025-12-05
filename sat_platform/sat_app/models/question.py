@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from ..extensions import db
 
 
 def utcnow():
     return datetime.now(timezone.utc)
+
+
+def generate_question_uid() -> str:
+    return f"Q{uuid4().hex[:10].upper()}"
 
 
 class Passage(db.Model):
@@ -40,6 +45,14 @@ class Question(db.Model):
     __tablename__ = "questions"
 
     id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(db.Integer, db.ForeignKey("question_sources.id"), index=True)
+    question_uid = db.Column(
+        db.String(32),
+        nullable=False,
+        unique=True,
+        index=True,
+        default=generate_question_uid,
+    )
     section = db.Column(db.String(32), nullable=False)  # RW / Math
     sub_section = db.Column(db.String(64))
     passage_id = db.Column(db.Integer, db.ForeignKey("passages.id"))
@@ -67,6 +80,7 @@ class Question(db.Model):
 
     passage = db.relationship("Passage", back_populates="questions")
     question_set = db.relationship("QuestionSet", back_populates="questions")
+    source = db.relationship("QuestionSource", back_populates="questions")
 
 
 class QuestionFigure(db.Model):

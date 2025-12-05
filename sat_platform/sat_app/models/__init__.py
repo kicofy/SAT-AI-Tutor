@@ -14,9 +14,12 @@ from .learning import (
     SkillMastery,
     QuestionReview,
     StudyPlan,
+    StudyPlanTask,
     DailyMetric,
     DiagnosticReport,
 )
+from .tutor_notes import TutorNote
+from .sources import QuestionSource
 from .imports import QuestionImportJob, QuestionDraft
 
 __all__ = [
@@ -32,8 +35,11 @@ __all__ = [
     "SkillMastery",
     "QuestionReview",
     "StudyPlan",
+    "StudyPlanTask",
     "DailyMetric",
     "DiagnosticReport",
+    "TutorNote",
+    "QuestionSource",
     "QuestionImportJob",
     "QuestionDraft",
 ]

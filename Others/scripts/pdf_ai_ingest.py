@@ -182,7 +182,7 @@ def normalize_question(question: dict, model: str) -> dict:
     )
     content = response.output[0].content[0].text
     try:
-        return json.loads(content)
+    return json.loads(content)
     except json.JSONDecodeError:
         print(
             "    !! Normalization failed for question",

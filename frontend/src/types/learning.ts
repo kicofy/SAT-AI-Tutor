@@ -1,4 +1,5 @@
 export type PlanBlock = {
+  block_id?: string;
   focus_skill: string;
   focus_skill_label?: string;
   section: string;
@@ -6,6 +7,12 @@ export type PlanBlock = {
   minutes: number;
   questions: number;
   notes?: string;
+  priority_score?: number;
+  strategy_tips?: string[];
+  reasons?: string[];
+  mastery_score?: number;
+  recency_days?: number | null;
+  recent_accuracy?: number | null;
 };
 
 export type StudyPlanDetail = {
@@ -13,7 +20,13 @@ export type StudyPlanDetail = {
   target_minutes: number;
   target_questions: number;
   section_split?: Record<string, number>;
+  allocation?: {
+    section_minutes_target?: Record<string, number>;
+    section_minutes_assigned?: Record<string, number>;
+  };
+  insights?: string[];
   blocks: PlanBlock[];
+  tasks?: PlanTask[];
 };
 
 export type MasteryEntry = {
@@ -31,5 +44,26 @@ export type ProgressEntry = {
   questions_answered: number;
   accuracy: number;
   sessions_completed: number;
+};
+
+export type PlanTask = {
+  block_id: string;
+  status: "pending" | "active" | "completed" | "expired";
+  questions_target: number;
+  questions_completed: number;
+  session_id?: number | null;
+  plan_date: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type TutorNote = {
+  title: string;
+  body: string;
+  priority?: "info" | "warning" | "success";
+};
+
+export type TutorNotesResponse = {
+  notes: TutorNote[];
 };
 

@@ -1,7 +1,7 @@
 @reference "../../app/globals.css";
 
 .screen {
-  @apply flex min-h-screen gap-5 bg-[#030918] p-6 text-white;
+  @apply flex min-h-screen gap-5 bg-[#030918] p-6 text-white items-start;
 }
 
 .main {

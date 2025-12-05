@@ -10,10 +10,23 @@ from ..extensions import db
 from ..models import Passage, Question, QuestionExplanationCache, QuestionFigure
 
 
-def list_questions(page: int, per_page: int, section: Optional[str] = None):
-    query = Question.query.options(joinedload(Question.passage))
+def list_questions(
+    page: int,
+    per_page: int,
+    section: Optional[str] = None,
+    question_uid: Optional[str] = None,
+    question_id: Optional[int] = None,
+    source_id: Optional[int] = None,
+):
+    query = Question.query.options(joinedload(Question.passage), joinedload(Question.source))
     if section:
         query = query.filter(Question.section == section)
+    if question_id:
+        query = query.filter(Question.id == question_id)
+    if question_uid:
+        query = query.filter(Question.question_uid.ilike(f"%{question_uid.strip()}%"))
+    if source_id:
+        query = query.filter(Question.source_id == source_id)
     return query.order_by(Question.created_at.desc()).paginate(page=page, per_page=per_page)
 
 

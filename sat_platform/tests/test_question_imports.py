@@ -7,7 +7,7 @@ import io
 import pytest
 
 from sat_app.extensions import db
-from sat_app.models import QuestionDraft, Question, QuestionFigure, QuestionImportJob, User
+from sat_app.models import QuestionDraft, Question, QuestionFigure, QuestionImportJob, QuestionSource, User
 
 
 @pytest.fixture()
@@ -96,10 +96,14 @@ def test_pdf_ingest_flow(client, admin_token, mock_pdf_ingest):
     assert data["parsed_questions"] == 1
     assert data["processed_pages"] == 2
     assert data["total_pages"] == 2
+    assert data["source_id"] is not None
+    assert data["source"]["filename"] == "vision.pdf"
     with client.application.app_context():
         drafts = QuestionDraft.query.all()
         assert len(drafts) == 1
         assert drafts[0].payload["skill_tags"] == ["RW_DataInterpretation"]
+        assert drafts[0].source_id == data["source_id"]
+        assert QuestionSource.query.count() == 1
 
 
 def _create_manual_draft(client, admin_token):
@@ -138,6 +142,36 @@ def test_publish_draft(client, admin_token, mock_parser):
     with client.application.app_context():
         assert QuestionDraft.query.count() == 0
         assert Question.query.count() == 1
+
+
+def test_publish_pdf_draft_links_source(client, admin_token, mock_pdf_ingest):
+    payload = io.BytesIO(b"%PDF-1.4 vision-mock")
+    resp = client.post(
+        "/api/admin/questions/ingest-pdf",
+        data={"file": (payload, "vision.pdf")},
+        headers={"Authorization": f"Bearer {admin_token}"},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 202
+    job_data = resp.get_json()["job"]
+    source_id = job_data["source_id"]
+    with client.application.app_context():
+        draft = QuestionDraft.query.first()
+        draft_id = draft.id
+    publish_resp = client.post(
+        f"/api/admin/questions/drafts/{draft_id}/publish",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert publish_resp.status_code == 201
+    question = publish_resp.get_json()["question"]
+    assert question["source_id"] == source_id
+    list_resp = client.get(
+        f"/api/admin/questions?source_id={source_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.get_json()["total"] >= 1
+    assert any(item["source_id"] == source_id for item in list_resp.get_json()["items"])
 
 
 def test_publish_legacy_draft(client, admin_token):

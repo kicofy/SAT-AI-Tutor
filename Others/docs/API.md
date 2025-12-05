@@ -13,7 +13,7 @@ Unless stated otherwise, send `Content-Type: application/json` and include `Auth
 | `POST /api/auth/register` | ❌ | ```{"email":"student@example.com","password":"StrongPass123!","username":"student1","profile":{"daily_available_minutes":90,"language_preference":"bilingual","exam_date":"2025-05-01","target_score_rw":700,"target_score_math":750}}``` | Always creates a `student`. Response: `{ user, access_token }`. |
 | `POST /api/auth/login` | ❌ | `{"identifier":"student@example.com","password":"StrongPass123!"}` | `identifier` accepts email or username. Response includes JWT + user payload. |
 | `GET /api/auth/me` | ✅ | n/a | Returns current user (profile, role). |
-| `POST /api/auth/admin/create` | ✅ (root) | `{"email":"coach@example.com","username":"coach1","password":"StrongPass123!"}` | Only the root admin (defaults: `ha22y` / `Kicofy5438`) may call; creates a new admin. |
+| `POST /api/auth/admin/create` | ✅ (root) | `{"email":"tutor@example.com","username":"tutor1","password":"StrongPass123!"}` | Only the root admin (defaults: `ha22y` / `Kicofy5438`) may call; creates a new admin. |
 | `GET /api/auth/ping` | ❌ | n/a | Health check. |
 
 ---

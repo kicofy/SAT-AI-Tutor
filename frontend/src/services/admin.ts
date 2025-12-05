@@ -17,6 +17,10 @@ export async function deleteQuestion(questionId: number) {
   await api.delete(`/api/admin/questions/${questionId}`);
 }
 
+export async function clearQuestionExplanation(questionId: number) {
+  await api.post(`/api/admin/questions/${questionId}/explanations/clear`);
+}
+
 export async function fetchImportStatus() {
   const { data } = await api.get("/api/admin/questions/imports");
   return data;
@@ -69,6 +73,9 @@ type QuestionListParams = {
   page?: number;
   per_page?: number;
   section?: string;
+  question_id?: number;
+  question_uid?: string;
+  source_id?: number;
 };
 
 export async function listQuestions(params?: QuestionListParams) {

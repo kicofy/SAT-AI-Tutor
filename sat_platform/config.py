@@ -57,6 +57,15 @@ class BaseConfig:
         or os.getenv("AI_EXPLAINER_MODEL")
         or "gpt-5.1"
     )
+    AI_TUTOR_NOTES_MODEL = (
+        os.getenv("AI_TUTOR_NOTES_MODEL")
+        or os.getenv("AI_COACH_NOTES_MODEL")
+        or AI_EXPLAINER_MODEL
+    )
+    AI_TUTOR_NOTES_ENABLE = (
+        os.getenv("AI_TUTOR_NOTES_ENABLE")
+        or os.getenv("AI_COACH_NOTES_ENABLE", "true")
+    ).lower() in {"1", "true", "yes"}
     PDF_INGEST_RESOLUTION = int(os.getenv("PDF_INGEST_RESOLUTION", "220"))
     PDF_INGEST_MAX_PAGES = int(os.getenv("PDF_INGEST_MAX_PAGES", "200"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
