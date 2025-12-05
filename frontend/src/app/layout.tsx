@@ -4,6 +4,7 @@ import "./globals.css";
 import { env } from "@/lib/env";
 import { QueryProvider } from "@/components/providers/query-provider";
 import { LocaleProvider } from "@/components/providers/locale-provider";
+import { CSSTransitionWrapper } from "@/components/ui/css-transition-wrapper";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -32,7 +33,9 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#020813]`}
       >
         <QueryProvider>
-          <LocaleProvider>{children}</LocaleProvider>
+          <LocaleProvider>
+            <CSSTransitionWrapper>{children}</CSSTransitionWrapper>
+          </LocaleProvider>
         </QueryProvider>
       </body>
     </html>

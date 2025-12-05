@@ -223,6 +223,10 @@ body {
   .stat-pill:active {
     transform: translateY(0);
   }
+
+  .page-fade {
+    animation: pageFadeIn 0.45s ease forwards;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -237,5 +241,22 @@ body {
   .card-ambient::after,
   .btn-cta::after {
     display: none;
+  }
+
+  .page-fade {
+    animation: none !important;
+  }
+}
+
+@keyframes pageFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.985);
+    filter: blur(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
   }
 }
