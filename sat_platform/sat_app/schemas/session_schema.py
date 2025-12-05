@@ -31,4 +31,6 @@ class SessionSchema(Schema):
     questions_done = fields.List(fields.Dict(), dump_only=True)
     summary = fields.Dict(dump_only=True)
     plan_block_id = fields.String(dump_only=True)
+    session_type = fields.String(dump_only=True)
+    diagnostic_attempt_id = fields.Integer(dump_only=True, allow_none=True)
 

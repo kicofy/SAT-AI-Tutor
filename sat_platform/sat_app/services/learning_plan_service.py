@@ -33,6 +33,13 @@ PLAN_PROTOCOL_VERSION = "plan.v2"
 RECENT_WINDOW_DAYS = 14
 
 
+def _ensure_diagnostic_completed(user_id: int) -> None:
+    from . import diagnostic_service  # local import to avoid circular dependency
+
+    if diagnostic_service.requires_diagnostic(user_id):
+        raise BadRequest("diagnostic_required")
+
+
 def _resolve_today() -> date:
     return datetime.now(timezone.utc).date()
 
@@ -402,6 +409,7 @@ def _build_blocks_v2(
 
 def generate_daily_plan(user_id: int, plan_date: date | None = None) -> StudyPlan:
     today = plan_date or _resolve_today()
+    _ensure_diagnostic_completed(user_id)
     _expire_previous_tasks(user_id, today)
     plan = StudyPlan.query.filter_by(user_id=user_id, plan_date=today).first()
     user = db.session.get(User, user_id)
@@ -451,6 +459,7 @@ def generate_daily_plan(user_id: int, plan_date: date | None = None) -> StudyPla
 
 
 def get_or_generate_plan(user_id: int, plan_date: date | None = None) -> StudyPlan:
+    _ensure_diagnostic_completed(user_id)
     plan = StudyPlan.query.filter_by(user_id=user_id, plan_date=plan_date or _resolve_today()).first()
     if plan:
         _ensure_plan_tasks(plan)
@@ -461,6 +470,7 @@ def get_or_generate_plan(user_id: int, plan_date: date | None = None) -> StudyPl
 def get_plan_with_tasks(
     user_id: int, plan_date: date | None = None
 ) -> Tuple[StudyPlan, List[dict]]:
+    _ensure_diagnostic_completed(user_id)
     plan = get_or_generate_plan(user_id, plan_date)
     tasks = (
         StudyPlanTask.query.filter_by(user_id=user_id, plan_date=plan.plan_date)
@@ -473,6 +483,7 @@ def get_plan_with_tasks(
 def start_plan_task(user_id: int, block_id: str) -> Tuple[StudySession, dict]:
     from . import session_service  # local import to avoid circular dependency
 
+    _ensure_diagnostic_completed(user_id)
     plan, task, block = _resolve_plan_task(user_id, block_id)
     session = task.session
     if session and session.ended_at is None:

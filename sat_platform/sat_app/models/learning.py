@@ -16,15 +16,24 @@ class StudySession(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    session_type = db.Column(db.String(32), nullable=False, default="practice")
     started_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     ended_at = db.Column(db.DateTime(timezone=True))
     questions_assigned = db.Column(db.JSON, nullable=False)
     questions_done = db.Column(db.JSON, nullable=True)
     summary = db.Column(db.JSON, nullable=True)
     plan_block_id = db.Column(db.String(128), index=True)
+    diagnostic_attempt_id = db.Column(
+        db.Integer, db.ForeignKey("diagnostic_attempts.id"), index=True
+    )
 
     user = db.relationship("User", backref="study_sessions")
     plan_task = db.relationship("StudyPlanTask", back_populates="session", uselist=False)
+    diagnostic_attempt = db.relationship(
+        "DiagnosticAttempt",
+        back_populates="session",
+        uselist=False,
+    )
 
 
 class UserQuestionLog(db.Model):
@@ -147,4 +156,27 @@ class DiagnosticReport(db.Model):
     narrative = db.Column(db.JSON, nullable=False)
 
     user = db.relationship("User", backref="diagnostic_reports")
+
+
+class DiagnosticAttempt(db.Model):
+    __tablename__ = "diagnostic_attempts"
+    __table_args__ = (
+        db.Index("ix_diagnostic_attempts_user_status", "user_id", "status"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    status = db.Column(db.String(32), nullable=False, default="pending")
+    total_questions = db.Column(db.Integer, nullable=False, default=0)
+    started_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    completed_at = db.Column(db.DateTime(timezone=True))
+    result_summary = db.Column(db.JSON)
+    metadata_json = db.Column("metadata", db.JSON)
+
+    user = db.relationship("User", backref="diagnostic_attempts")
+    session = db.relationship(
+        "StudySession",
+        back_populates="diagnostic_attempt",
+        uselist=False,
+    )
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from sat_app.extensions import db
-from sat_app.models import User, UserProfile
+from sat_app.models import User, UserProfile, DiagnosticAttempt
 from sat_app.services import learning_plan_service
 
 
@@ -24,6 +24,14 @@ def _create_user():
     )
     db.session.add(user)
     db.session.add(profile)
+    db.session.commit()
+    attempt = DiagnosticAttempt(
+        user_id=user.id,
+        status="skipped",
+        total_questions=0,
+        result_summary={"status": "skipped"},
+    )
+    db.session.add(attempt)
     db.session.commit()
     return user
 

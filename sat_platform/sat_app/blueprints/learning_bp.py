@@ -20,7 +20,7 @@ from ..schemas import (
     SessionExplanationSchema,
 )
 from ..services import session_service, ai_explainer, adaptive_engine
-from ..services import learning_plan_service, tutor_notes_service
+from ..services import learning_plan_service, tutor_notes_service, diagnostic_service
 from ..extensions import db
 
 learning_bp = Blueprint("learning_bp", __name__)
@@ -29,6 +29,23 @@ start_schema = SessionStartSchema()
 answer_schema = SessionAnswerSchema()
 explanation_schema = SessionExplanationSchema()
 session_schema = SessionSchema()
+
+
+def _diagnostic_guard():
+    requires = diagnostic_service.requires_diagnostic(current_user.id)
+    if not requires:
+        return None
+    payload, session = diagnostic_service.get_status_payload(current_user.id)
+    payload["session"] = session_schema.dump(session) if session else None
+    return (
+        jsonify(
+            {
+                "error": "diagnostic_required",
+                "diagnostic": payload,
+            }
+        ),
+        HTTPStatus.PRECONDITION_REQUIRED,
+    )
 
 
 @learning_bp.errorhandler(ValidationError)
@@ -221,6 +238,9 @@ def mastery_snapshot():
 @learning_bp.get("/plan/today")
 @jwt_required()
 def plan_today():
+    guard = _diagnostic_guard()
+    if guard:
+        return guard
     plan, tasks = learning_plan_service.get_plan_with_tasks(current_user.id)
     return jsonify({"plan": plan.generated_detail, "tasks": tasks})
 
@@ -228,6 +248,9 @@ def plan_today():
 @learning_bp.post("/plan/regenerate")
 @jwt_required()
 def plan_regenerate():
+    guard = _diagnostic_guard()
+    if guard:
+        return guard
     plan = learning_plan_service.generate_daily_plan(current_user.id)
     _, tasks = learning_plan_service.get_plan_with_tasks(current_user.id, plan.plan_date)
     return jsonify({"plan": plan.generated_detail, "tasks": tasks})
@@ -236,6 +259,9 @@ def plan_regenerate():
 @learning_bp.get("/plan/tasks")
 @jwt_required()
 def plan_tasks():
+    guard = _diagnostic_guard()
+    if guard:
+        return guard
     _, tasks = learning_plan_service.get_plan_with_tasks(current_user.id)
     return jsonify({"tasks": tasks})
 
@@ -243,6 +269,9 @@ def plan_tasks():
 @learning_bp.post("/plan/tasks/<string:block_id>/start")
 @jwt_required()
 def plan_task_start(block_id: str):
+    guard = _diagnostic_guard()
+    if guard:
+        return guard
     try:
         session, task = learning_plan_service.start_plan_task(current_user.id, block_id)
     except BadRequest as exc:
@@ -262,6 +291,9 @@ def plan_task_start(block_id: str):
 @learning_bp.get("/tutor-notes/today")
 @jwt_required()
 def tutor_notes_today():
+    guard = _diagnostic_guard()
+    if guard:
+        return guard
     notes = tutor_notes_service.get_or_generate_tutor_notes(current_user.id)
     return jsonify(notes)
 

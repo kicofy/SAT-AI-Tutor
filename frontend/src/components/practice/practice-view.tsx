@@ -34,6 +34,7 @@ type ViewState = "prep" | "loading" | "active";
 
 type PracticeViewProps = {
   planBlockId?: string;
+  autoResumeDiagnostic?: boolean;
 };
 
 type StepDirective = {
@@ -79,13 +80,14 @@ const DEFAULT_MAX_QUESTIONS = 12;
 const keyForQuestion = (sessionId: number, questionId: number) =>
   `${sessionId}-${questionId}`;
 
-export function PracticeView({ planBlockId }: PracticeViewProps = {}) {
+export function PracticeView({ planBlockId, autoResumeDiagnostic = false }: PracticeViewProps = {}) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const router = useRouter();
   const isPlanTaskMode = Boolean(planBlockId);
   const userId = useAuthStore((state) => state.user?.id);
-  const [viewState, setViewState] = useState<ViewState>(isPlanTaskMode ? "loading" : "prep");
+  const initialViewState: ViewState = isPlanTaskMode || autoResumeDiagnostic ? "loading" : "prep";
+  const [viewState, setViewState] = useState<ViewState>(initialViewState);
   const [session, setSession] = useState<Session | null>(null);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -109,6 +111,7 @@ export function PracticeView({ planBlockId }: PracticeViewProps = {}) {
   const [isFinishing, setIsFinishing] = useState(false);
   const [isAborting, setIsAborting] = useState(false);
   const [planTask, setPlanTask] = useState<PlanTask | null>(null);
+  const [hasAutoResumedDiagnostic, setHasAutoResumedDiagnostic] = useState(false);
 
   const pruneProgressForSession = useCallback((nextSession: Session) => {
     setQuestionProgress((prev) => {
@@ -130,12 +133,16 @@ export function PracticeView({ planBlockId }: PracticeViewProps = {}) {
     });
   }, []);
   const handleBackToPrep = useCallback(() => {
+    if (session?.session_type === "diagnostic" || activeSession?.session_type === "diagnostic") {
+      router.push("/diagnostic");
+      return;
+    }
     if (planBlockId) {
       router.push("/");
       return;
     }
     setViewState("prep");
-  }, [planBlockId, router]);
+  }, [session?.session_type, activeSession?.session_type, planBlockId, router]);
 
   const sectionOptions = useMemo(
     () => [
@@ -155,10 +162,14 @@ export function PracticeView({ planBlockId }: PracticeViewProps = {}) {
     [t]
   );
 
+  const diagnosticSessionActive =
+    session?.session_type === "diagnostic" || activeSession?.session_type === "diagnostic";
+  const isDiagnosticContext = autoResumeDiagnostic || diagnosticSessionActive;
+
   useEffect(() => {
     setPlanDetail(null);
     setPlanTasksMap({});
-    if (!userId) {
+    if (!userId || isDiagnosticContext) {
       return;
     }
     let mounted = true;
@@ -184,14 +195,18 @@ export function PracticeView({ planBlockId }: PracticeViewProps = {}) {
         setPlanTasksMap(taskEntries);
         setPlanError(null);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (!mounted) return;
+        if (err instanceof AxiosError && err.response?.status === 428) {
+          setPlanError(t("practice.plan.locked"));
+          return;
+        }
         setPlanError(t("practice.plan.fallback"));
       });
     return () => {
       mounted = false;
     };
-  }, [t, userId]);
+  }, [t, userId, isDiagnosticContext]);
 
   useEffect(() => {
     if (planBlockId || !userId) {
@@ -202,7 +217,8 @@ export function PracticeView({ planBlockId }: PracticeViewProps = {}) {
       .then(async (active) => {
         if (!mounted) return;
         const hasProgress = Boolean(active?.questions_done?.length);
-        if (active && !hasProgress) {
+        const isDiagnosticSession = active?.session_type === "diagnostic";
+        if (active && !hasProgress && !isDiagnosticSession) {
           await abortSession(active.id).catch(() => undefined);
           if (!mounted) return;
           setActiveSession(null);
@@ -700,6 +716,16 @@ useEffect(() => {
     [session, currentQuestion]
   );
 
+  useEffect(() => {
+    if (!autoResumeDiagnostic || hasAutoResumedDiagnostic) {
+      return;
+    }
+    if (activeSession && activeSession.session_type === "diagnostic") {
+      resumeFromSession(activeSession);
+      setHasAutoResumedDiagnostic(true);
+    }
+  }, [autoResumeDiagnostic, hasAutoResumedDiagnostic, activeSession, resumeFromSession]);
+
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-0">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -714,13 +740,30 @@ useEffect(() => {
         ) : (
           <>
             {viewState === "prep" ? (
-              <Link
-                href="/"
-                className="inline-flex items-center gap-2 text-sm font-semibold text-white/80 transition hover:text-white"
-              >
-                <span aria-hidden="true">←</span>
-                {t("practice.nav.back")}
-              </Link>
+              (() => {
+                const isDiagnosticContext =
+                  session?.session_type === "diagnostic" || activeSession?.session_type === "diagnostic";
+                if (isDiagnosticContext) {
+                  return (
+                    <Link
+                      href="/diagnostic"
+                      className="inline-flex items-center gap-2 text-sm font-semibold text-white/80 transition hover:text-white"
+                    >
+                      <span aria-hidden="true">←</span>
+                      {t("diagnostic.nav.back")}
+                    </Link>
+                  );
+                }
+                return (
+                  <Link
+                    href="/"
+                    className="inline-flex items-center gap-2 text-sm font-semibold text-white/80 transition hover:text-white"
+                  >
+                    <span aria-hidden="true">←</span>
+                    {t("practice.nav.back")}
+                  </Link>
+                );
+              })()
             ) : (
               <button
                 type="button"
@@ -728,19 +771,18 @@ useEffect(() => {
                 className="inline-flex items-center gap-2 text-sm font-semibold text-white/80 transition hover:text-white"
               >
                 <span aria-hidden="true">←</span>
-                {t("practice.nav.backPrep")}
+                {session?.session_type === "diagnostic" || activeSession?.session_type === "diagnostic"
+                  ? t("diagnostic.nav.back")
+                  : t("practice.nav.backPrep")}
               </button>
             )}
           </>
         )}
         <div className="flex flex-wrap gap-3">
           {summaryStats.map((stat) => (
-            <div
-              key={stat.label}
-              className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/70"
-            >
-              <p className="uppercase tracking-wide text-white/50">{stat.label}</p>
-              <p className="text-sm font-semibold text-white">{stat.value}</p>
+            <div key={stat.label} className="stat-pill min-w-[140px] text-white">
+              <p className="text-[11px] uppercase tracking-wide text-white/60">{stat.label}</p>
+              <p className="text-base font-semibold">{stat.value}</p>
             </div>
           ))}
         </div>
@@ -783,13 +825,13 @@ useEffect(() => {
             </p>
             <div className="flex flex-wrap gap-3">
               <button
-                className="rounded-xl bg-white/90 px-4 py-2 text-sm font-semibold text-[#050E1F]"
+                className="btn-cta px-4 py-2 text-sm"
                 onClick={() => setViewState("active")}
               >
                 {t("practice.resume.continue")}
               </button>
               <button
-                className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80"
+                className="btn-ghost px-4 py-2 text-sm"
                 onClick={() => setFinishDialogOpen(true)}
               >
                 {t("practice.resume.discard")}
@@ -812,13 +854,13 @@ useEffect(() => {
             </p>
             <div className="flex flex-wrap gap-3">
               <button
-                className="rounded-xl bg-white/90 px-4 py-2 text-sm font-semibold text-[#050E1F]"
+                className="btn-cta px-4 py-2 text-sm"
                 onClick={() => resumeFromSession(activeSession)}
               >
                 {t("practice.resume.continue")}
               </button>
               <button
-                className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80"
+                className="btn-ghost px-4 py-2 text-sm"
                 onClick={() => setAbortDialogOpen(true)}
                 disabled={isAborting}
               >
@@ -844,9 +886,9 @@ useEffect(() => {
                     onClick={() =>
                       setPrepConfig((prev) => ({ ...prev, section: option.id }))
                     }
-                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                    className={`card-ambient border px-4 py-3 text-left transition ${
                       isActive
-                        ? "border-white/80 bg-white/10 text-white"
+                        ? "border-white/70 bg-white/10 text-white shadow-lg shadow-white/10"
                         : "border-white/10 bg-transparent text-white/70 hover:border-white/30"
                     }`}
                   >
@@ -856,27 +898,25 @@ useEffect(() => {
                 );
               })}
             </div>
-            <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm">
+            <div className="card-ambient flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm">
               <div>
-                  <p className="text-white/70">{t("practice.questionCount.label")}</p>
-                <p className="text-white text-lg font-semibold">
-                  {prepConfig.num_questions}
-                </p>
+                <p className="text-white/70">{t("practice.questionCount.label")}</p>
+                <p className="text-white text-lg font-semibold">{prepConfig.num_questions}</p>
                 <p className="text-xs text-white/50">
-                    {t("practice.questionCount.goal", { goal: goalSummary })}
+                  {t("practice.questionCount.goal", { goal: goalSummary })}
                   {planError && <span className="text-red-300"> · {planError}</span>}
                 </p>
                 <p className="text-xs text-white/40">
-                    {t("practice.questionCount.range", {
-                      min: MIN_QUESTIONS,
-                      max: maxQuestions,
-                    })}
+                  {t("practice.questionCount.range", {
+                    min: MIN_QUESTIONS,
+                    max: maxQuestions,
+                  })}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  className="h-8 w-8 rounded-full border border-white/20 text-white/80"
+                  className="btn-circle text-lg"
                   onClick={() =>
                     setPrepConfig((prev) => ({
                       ...prev,
@@ -888,7 +928,7 @@ useEffect(() => {
                 </button>
                 <button
                   type="button"
-                  className="h-8 w-8 rounded-full border border-white/20 text-white/80"
+                  className="btn-circle text-lg"
                   onClick={() =>
                     setPrepConfig((prev) => ({
                       ...prev,
@@ -903,7 +943,7 @@ useEffect(() => {
             <button
               type="submit"
               disabled={viewState === "loading"}
-              className="w-full rounded-xl bg-white/90 px-6 py-3 text-sm font-semibold text-[#050E1F]"
+              className="btn-cta w-full justify-center"
             >
               {viewState === "loading"
                 ? t("practice.button.startLoading")
@@ -931,6 +971,11 @@ useEffect(() => {
               <span className="text-[11px] uppercase tracking-wide text-white/40">
                 {t("practice.meta.questionId", { id: questionReference || "—" })}
               </span>
+              {session?.session_type === "diagnostic" && (
+                <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-200">
+                  {t("diagnostic.badge.active")}
+                </span>
+              )}
             </span>
           }
           tone="subtle"
@@ -938,9 +983,9 @@ useEffect(() => {
         <div className="mb-4 flex items-center justify-between text-xs text-white/60">
           <button
             type="button"
-            className="rounded-full border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-30"
-          onClick={() => goToQuestion(currentIndex - 1)}
-          disabled={!session || currentIndex === 0}
+            className="btn-ghost px-3 py-1 text-xs font-semibold disabled:opacity-30"
+            onClick={() => goToQuestion(currentIndex - 1)}
+            disabled={!session || currentIndex === 0}
           >
             ← {t("practice.nav.prev")}
           </button>
@@ -952,17 +997,15 @@ useEffect(() => {
           </span>
           <button
             type="button"
-            className="rounded-full border border-white/20 px-3 py-1 text-white/80 transition hover:border-white/40 disabled:opacity-30"
-          onClick={() => goToQuestion(currentIndex + 1)}
-          disabled={
-            !session || currentIndex >= session.questions_assigned.length - 1
-          }
+            className="btn-ghost px-3 py-1 text-xs font-semibold disabled:opacity-30"
+            onClick={() => goToQuestion(currentIndex + 1)}
+            disabled={!session || currentIndex >= session.questions_assigned.length - 1}
           >
             {t("practice.nav.next")} →
           </button>
         </div>
-        <div className="space-y-4">
-            <div className="space-y-4 rounded-2xl border border-white/10 bg-white/5 p-5">
+            <div className="space-y-4">
+            <div className="card-ambient space-y-4 rounded-2xl border border-white/10 bg-white/5 p-5">
               {currentQuestion.figures?.length ? (
                 <div className="space-y-4">
                   {currentQuestion.figures.map((figure) => {
@@ -986,7 +1029,7 @@ useEffect(() => {
                   })}
                 </div>
               ) : currentQuestion.has_figure ? (
-                <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-xs text-amber-100">
+                <div className="card-ambient rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-xs text-amber-100">
                   {t("practice.figure.missing")}
                 </div>
               ) : null}
@@ -1072,7 +1115,7 @@ useEffect(() => {
                 );
               })}
             </div>
-            <div className="space-y-3 rounded-2xl border border-white/15 bg-white/5 p-4 text-sm">
+              <div className="card-ambient space-y-3 rounded-2xl border border-white/15 bg-white/5 p-4 text-sm">
               <div className="flex flex-col gap-1">
                 {hasChecked ? (
                   <>
@@ -1092,7 +1135,7 @@ useEffect(() => {
               {!hasChecked ? (
                 <div className="flex flex-wrap gap-3">
                   <button
-                    className="rounded-xl bg-white/90 px-4 py-2 text-sm font-semibold text-[#050E1F] disabled:opacity-40"
+                    className="btn-cta px-4 py-2 text-sm disabled:opacity-40"
                     disabled={!selectedChoice || isChecking || isQuestionUnavailable}
                     onClick={handleCheckAnswer}
                   >
@@ -1102,7 +1145,7 @@ useEffect(() => {
               ) : (
                 <div className="flex flex-wrap gap-3">
                   <button
-                    className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80 disabled:opacity-40"
+                    className="btn-ghost px-4 py-2 text-sm disabled:opacity-40"
                     disabled={Boolean(explanation) || isExplanationLoading}
                     onClick={handleViewExplanation}
                   >
@@ -1113,7 +1156,7 @@ useEffect(() => {
                       : t("practice.button.explanation.generate")}
                   </button>
                   <button
-                    className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80"
+                    className="btn-ghost px-4 py-2 text-sm"
                     onClick={() =>
                       currentIndex + 1 >= session.questions_assigned.length
                         ? setFinishDialogOpen(true)
@@ -1128,7 +1171,7 @@ useEffect(() => {
               )}
               {!revealedAnswer && hasChecked ? (
                 <button
-                  className="w-full rounded-xl border border-emerald-400/60 bg-transparent px-4 py-2 text-sm text-emerald-200 hover:bg-emerald-400/10"
+                  className="btn-ghost w-full border border-emerald-400/60 text-sm text-emerald-200 hover:bg-emerald-400/10"
                   onClick={() => {
                     if (!progressKey || !session || !currentQuestion) return;
                     setQuestionProgress((prev) => {

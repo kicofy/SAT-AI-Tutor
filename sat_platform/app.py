@@ -13,7 +13,11 @@ from dotenv import load_dotenv
 
 # Ensure `.env` files are loaded before configuration happens inside `create_app`.
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
+if os.getenv("FLASK_SKIP_DOTENV") not in {"1", "true", "True"}:
+    try:
+        load_dotenv(PROJECT_ROOT / ".env")
+    except PermissionError:
+        pass
 
 from sat_app import create_app  # noqa: E402  (import after load_dotenv)
 

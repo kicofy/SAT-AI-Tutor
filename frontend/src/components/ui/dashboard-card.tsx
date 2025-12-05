@@ -5,12 +5,12 @@ import { ReactNode } from "react";
 import clsx from "clsx";
 
 const cardVariants = cva(
-  "rounded-2xl border border-white/8 bg-[#0A1324] p-5 flex flex-col gap-3",
+  "card-ambient rounded-2xl border border-white/10 bg-[#0A1324]/95 p-5 flex flex-col gap-3 backdrop-blur-[2px]",
   {
     variants: {
       tone: {
         default: "",
-        subtle: "bg-[#0C1529]",
+        subtle: "bg-[#0C1529]/95",
       },
     },
     defaultVariants: { tone: "default" },

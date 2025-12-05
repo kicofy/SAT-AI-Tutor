@@ -29,6 +29,7 @@ export type SessionQuestion = {
   correct_answer?: QuestionAnswer;
   skill_tags?: string[];
   unavailable_reason?: string;
+  diagnostic_skill?: string;
 };
 
 export type SessionProgressEntry = {
@@ -37,6 +38,7 @@ export type SessionProgressEntry = {
   answered_at?: string;
   is_correct?: boolean;
   user_answer?: QuestionAnswer | null;
+  diagnostic_skill?: string;
 };
 
 export type Session = {
@@ -46,6 +48,8 @@ export type Session = {
   started_at?: string;
   ended_at?: string | null;
   plan_block_id?: string | null;
+  session_type?: string;
+  diagnostic_attempt_id?: number | null;
 };
 
 export type StartSessionPayload = {

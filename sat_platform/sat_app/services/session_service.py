@@ -47,13 +47,27 @@ def create_session(
     questions: List[Question],
     *,
     plan_block_id: str | None = None,
+    session_type: str = "practice",
+    diagnostic_attempt_id: int | None = None,
+    question_overrides: List[dict] | None = None,
 ) -> StudySession:
-    serialized = [_serialize_question(q) for q in questions]
+    serialized: List[dict] = []
+    overrides = question_overrides or []
+    for idx, question in enumerate(questions):
+        payload = _serialize_question(question)
+        extra = overrides[idx] if idx < len(overrides) else None
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                if value is not None:
+                    payload[key] = value
+        serialized.append(payload)
     session = StudySession(
         user_id=user_id,
         questions_assigned=serialized,
         questions_done=[],
         plan_block_id=plan_block_id,
+        session_type=session_type,
+        diagnostic_attempt_id=diagnostic_attempt_id,
     )
     db.session.add(session)
     _commit_with_retry()
@@ -89,6 +103,10 @@ def end_session(session: StudySession) -> StudySession:
         from . import learning_plan_service
 
         learning_plan_service.handle_session_end(session)
+    if session.session_type == "diagnostic":
+        from . import diagnostic_service
+
+        diagnostic_service.handle_session_end(session)
     return session
 
 
@@ -99,6 +117,10 @@ def abort_session(session: StudySession) -> StudySession:
         from . import learning_plan_service
 
         learning_plan_service.handle_session_abort(session)
+    if session.session_type == "diagnostic":
+        from . import diagnostic_service
+
+        diagnostic_service.handle_session_abort(session)
     return session
 
 
@@ -193,12 +215,16 @@ def refresh_assigned_questions(session: StudySession | None, *, commit: bool = T
 
     for entry in assigned:
         question_id = entry.get("question_id")
+        diagnostic_skill = entry.get("diagnostic_skill")
         updated = serialized_map.get(question_id)
         if updated:
             if entry.get("unavailable_reason"):
                 mutated = True
                 updated = dict(updated)
                 updated.pop("unavailable_reason", None)
+            if diagnostic_skill:
+                updated = dict(updated)
+                updated["diagnostic_skill"] = diagnostic_skill
             refreshed_entries.append(updated)
             if updated != entry:
                 mutated = True
@@ -219,6 +245,8 @@ def refresh_assigned_questions(session: StudySession | None, *, commit: bool = T
         )
         if replacement:
             serialized = _serialize_question(replacement)
+            if diagnostic_skill:
+                serialized["diagnostic_skill"] = diagnostic_skill
             used_ids.add(replacement.id)
             refreshed_entries.append(serialized)
             mutated = True
@@ -307,6 +335,8 @@ def _dominant_section(entries: List[dict]):
 
 
 def _reseed_session_questions(session: StudySession, desired_count: int):
+    if session.session_type == "diagnostic":
+        return session.questions_assigned or []
     count = max(desired_count, 1)
     questions = select_questions(session.user_id, num_questions=count)
     if not questions:
@@ -325,6 +355,11 @@ def _reseed_session_questions(session: StudySession, desired_count: int):
 
 def _append_question_progress(session: StudySession, question: Question, log: UserQuestionLog) -> None:
     progress_list = session.questions_done or []
+    diagnostic_skill = None
+    for assigned in session.questions_assigned or []:
+        if assigned.get("question_id") == question.id:
+            diagnostic_skill = assigned.get("diagnostic_skill")
+            break
     for entry in progress_list:
         if entry.get("question_id") == question.id:
             entry.update(
@@ -333,6 +368,7 @@ def _append_question_progress(session: StudySession, question: Question, log: Us
                     "answered_at": log.answered_at.isoformat(),
                     "is_correct": log.is_correct,
                     "user_answer": log.user_answer,
+                    "diagnostic_skill": diagnostic_skill or entry.get("diagnostic_skill"),
                 }
             )
             break
@@ -344,6 +380,7 @@ def _append_question_progress(session: StudySession, question: Question, log: Us
                 "answered_at": log.answered_at.isoformat(),
                 "is_correct": log.is_correct,
                 "user_answer": log.user_answer,
+                "diagnostic_skill": diagnostic_skill,
             }
         )
     session.questions_done = progress_list

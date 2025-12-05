@@ -10,6 +10,7 @@ from .learning_bp import learning_bp
 from .question_bp import question_bp
 from .student_bp import student_bp
 from .metrics_bp import metrics_bp
+from .diagnostic_bp import diagnostic_bp
 
 BLUEPRINTS = (
     (auth_bp, "/api/auth"),
@@ -17,6 +18,7 @@ BLUEPRINTS = (
     (student_bp, "/api/student"),
     (question_bp, "/api/question"),
     (learning_bp, "/api/learning"),
+    (diagnostic_bp, "/api/diagnostic"),
     (ai_bp, "/api/ai"),
     (analytics_bp, "/api/analytics"),
     (metrics_bp, ""),
@@ -29,6 +31,7 @@ __all__ = [
     "analytics_bp",
     "auth_bp",
     "learning_bp",
+    "diagnostic_bp",
     "question_bp",
     "student_bp",
     "metrics_bp",

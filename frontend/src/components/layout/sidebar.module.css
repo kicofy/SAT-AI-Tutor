@@ -25,6 +25,44 @@
 }
 
 .navItem {
-  @apply flex items-center gap-3 rounded-xl px-3 py-2 text-sm text-white/70 hover:text-white hover:bg-white/5 transition-colors;
+  position: relative;
+  @apply flex items-center gap-3 rounded-xl px-3 py-2 text-sm text-white/70 transition-all;
+  overflow: hidden;
+}
+
+.navItem::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(120deg, rgba(255, 255, 255, 0.08), rgba(77, 107, 255, 0.15));
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.navItem > * {
+  position: relative;
+  z-index: 1;
+}
+
+.navItem svg {
+  transition: transform 200ms ease, color 200ms ease;
+}
+
+.navItem:hover {
+  @apply text-white;
+  transform: translateX(4px);
+}
+
+.navItem:hover::before {
+  opacity: 1;
+}
+
+.navItem:hover svg {
+  transform: translateX(2px) scale(1.05);
+}
+
+.navItem:active {
+  transform: translateX(2px);
 }
 

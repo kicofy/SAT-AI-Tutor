@@ -17,6 +17,7 @@ from .learning import (
     StudyPlanTask,
     DailyMetric,
     DiagnosticReport,
+    DiagnosticAttempt,
 )
 from .tutor_notes import TutorNote
 from .sources import QuestionSource
@@ -38,6 +39,7 @@ __all__ = [
     "StudyPlanTask",
     "DailyMetric",
     "DiagnosticReport",
+    "DiagnosticAttempt",
     "TutorNote",
     "QuestionSource",
     "QuestionImportJob",

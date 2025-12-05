@@ -297,6 +297,10 @@ def test_tutor_notes_endpoint_returns_cached(client, student_token, monkeypatch)
 
     monkeypatch.setattr("sat_app.services.tutor_notes_service._call_ai", fake_call_ai)
 
+    client.post(
+        "/api/diagnostic/skip",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
     resp = client.get(
         "/api/learning/tutor-notes/today",
         headers={"Authorization": f"Bearer {student_token}"},
@@ -320,6 +324,10 @@ def test_tutor_notes_fallback_when_disabled(app_with_db, client, student_token, 
         original = app_with_db.config.get("AI_TUTOR_NOTES_ENABLE", True)
         app_with_db.config["AI_TUTOR_NOTES_ENABLE"] = False
     try:
+        client.post(
+            "/api/diagnostic/skip",
+            headers={"Authorization": f"Bearer {student_token}"},
+        )
         resp = client.get(
             "/api/learning/tutor-notes/today",
             headers={"Authorization": f"Bearer {student_token}"},
@@ -358,6 +366,10 @@ def test_plan_endpoints(client, seeded_question, student_token, monkeypatch):
         },
     )
 
+    client.post(
+        "/api/diagnostic/skip",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
     resp = client.get(
         "/api/learning/plan/today",
         headers={"Authorization": f"Bearer {student_token}"},
@@ -371,6 +383,37 @@ def test_plan_endpoints(client, seeded_question, student_token, monkeypatch):
         headers={"Authorization": f"Bearer {student_token}"},
     )
     assert regen.status_code == 200
+
+
+def test_plan_endpoint_requires_diagnostic(client, student_token):
+    resp = client.get(
+        "/api/learning/plan/today",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert resp.status_code == 428
+    payload = resp.get_json()
+    assert payload["error"] == "diagnostic_required"
+    diagnostic = payload.get("diagnostic")
+    assert diagnostic
+    assert diagnostic.get("requires_diagnostic") is True
+
+
+def test_diagnostic_start_and_status(client, seeded_question, student_token):
+    status_resp = client.get(
+        "/api/diagnostic/status",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert status_resp.status_code == 200
+    status_payload = status_resp.get_json()
+    assert status_payload["requires_diagnostic"] is True
+
+    start_resp = client.post(
+        "/api/diagnostic/start",
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert start_resp.status_code == 201
+    start_payload = start_resp.get_json()
+    assert start_payload["session"]
 
 
 def test_explanation_cache_reused_across_sessions(client, seeded_question, student_token, monkeypatch):

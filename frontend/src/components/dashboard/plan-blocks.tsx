@@ -17,20 +17,24 @@ export function PlanBlocks({ blocks, taskMap }: PlanBlocksProps) {
       {blocks.map((block) => (
         <div
           key={`${block.focus_skill}-${block.minutes}-${block.questions}-${block.block_id ?? "legacy"}`}
-          className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/80 transition hover:border-white/30"
+          className="card-ambient rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-white/80"
         >
-          <p className="font-medium text-white break-words leading-tight">
-            {block.focus_skill_label ?? block.focus_skill}
+          <div className="flex flex-col gap-1">
+            <p className="font-medium text-white break-words leading-tight">
+              {block.focus_skill_label ?? block.focus_skill}
+            </p>
             {block.domain ? (
-              <span className="ml-2 text-xs uppercase tracking-wide text-white/50">
-                {block.domain}
-              </span>
+              <span className="text-xs uppercase tracking-wide text-white/50">{block.domain}</span>
             ) : null}
-          </p>
-          <p className="mt-2 text-xs text-white/50">
-            {t("plan.block.minutes", { minutes: block.minutes })} ·{" "}
-            {t("plan.block.questions", { count: block.questions })}
-          </p>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-white/60">
+            <span className="chip-soft">
+              {t("plan.block.minutes", { minutes: block.minutes })}
+            </span>
+            <span className="chip-soft">
+              {t("plan.block.questions", { count: block.questions })}
+            </span>
+          </div>
           {block.block_id ? (
             <PlanBlockAction blockId={block.block_id} task={taskMap[block.block_id]} />
           ) : null}
@@ -56,10 +60,8 @@ function PlanBlockAction({ blockId, task }: { blockId: string; task?: PlanTask }
   return (
     <Link
       href={`/plan/tasks/${encodeURIComponent(blockId)}`}
-      className={`mt-3 inline-flex items-center justify-center rounded-xl border px-3 py-1 text-xs font-medium transition ${
-        isCompleted
-          ? "border-emerald-300/40 bg-emerald-500/20 text-emerald-100 pointer-events-none"
-          : "border-white/20 text-white/90 hover:border-white/50"
+      className={`mt-3 text-xs font-semibold ${
+        isCompleted ? "chip-soft chip-soft--success pointer-events-none" : "btn-ghost"
       }`}
       aria-disabled={isCompleted}
     >
