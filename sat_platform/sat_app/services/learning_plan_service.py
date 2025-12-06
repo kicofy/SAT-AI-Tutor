@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 from flask import current_app
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
+from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.exceptions import NotFound, BadRequest
 
 from ..extensions import db
@@ -477,6 +478,13 @@ def get_plan_with_tasks(
         .order_by(StudyPlanTask.id.asc())
         .all()
     )
+    if tasks:
+        from . import session_service  # local import to avoid circular dependency
+
+        for task in tasks:
+            session = task.session
+            if session and session.ended_at is None:
+                session_service.refresh_assigned_questions(session)
     return plan, [serialize_task(task) for task in tasks]
 
 
@@ -488,6 +496,7 @@ def start_plan_task(user_id: int, block_id: str) -> Tuple[StudySession, dict]:
     session = task.session
     if session and session.ended_at is None:
         session_service.refresh_assigned_questions(session)
+        _ensure_session_question_target(session, task, block)
         return session, serialize_task(task)
 
     questions = _select_questions_for_block(user_id, block)
@@ -496,6 +505,7 @@ def start_plan_task(user_id: int, block_id: str) -> Tuple[StudySession, dict]:
 
     session = _create_plan_session(user_id, questions, block["block_id"])
     session_service.refresh_assigned_questions(session)
+    _ensure_session_question_target(session, task, block)
     task.session_id = session.id
     task.status = TASK_ACTIVE
     task.started_at = task.started_at or datetime.now(timezone.utc)
@@ -660,6 +670,7 @@ def _create_plan_session(user_id: int, questions: List, plan_block_id: str) -> S
         user_id=user_id,
         questions=questions,
         plan_block_id=plan_block_id,
+        session_type="plan",
     )
 
 
@@ -670,4 +681,50 @@ def _normalize_section(section: str | None) -> str | None:
     if normalized in {"RW", "MATH"}:
         return normalized
     return None
+
+
+def _ensure_session_question_target(session: StudySession, task: StudyPlanTask, block: dict) -> None:
+    from . import session_service  # local import to avoid circular dependency
+
+    target = task.questions_target or block.get("questions") or len(session.questions_assigned or [])
+    assigned = session.questions_assigned or []
+    deficit = max(target - len(assigned), 0)
+    if deficit <= 0:
+        return
+
+    existing_ids = {
+        entry.get("question_id")
+        for entry in assigned
+        if entry.get("question_id")
+    }
+
+    additions: List[dict] = []
+    attempts = 0
+    section = _normalize_section(block.get("section"))
+    focus_skill = block.get("focus_skill")
+
+    while deficit > 0 and attempts < 3:
+        attempts += 1
+        candidates = session_service.select_questions(
+            user_id=session.user_id,
+            num_questions=deficit,
+            section=section,
+            focus_skill=focus_skill,
+        )
+        if not candidates:
+            break
+        for question in candidates:
+            if question.id in existing_ids:
+                continue
+            serialized = session_service.serialize_question(question)
+            additions.append(serialized)
+            existing_ids.add(question.id)
+            deficit -= 1
+            if deficit <= 0:
+                break
+
+    if additions:
+        session.questions_assigned = assigned + additions
+        flag_modified(session, "questions_assigned")
+        db.session.commit()
 

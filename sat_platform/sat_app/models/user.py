@@ -23,6 +23,13 @@ class User(db.Model):
     role = db.Column(db.String(32), nullable=False, default="student")
     is_root = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    is_email_verified = db.Column(db.Boolean, nullable=False, default=False)
+    email_verification_code = db.Column(db.String(12))
+    email_verification_expires_at = db.Column(db.DateTime(timezone=True))
+    email_verification_attempts = db.Column(db.Integer, nullable=False, default=0)
+    email_verification_sent_at = db.Column(db.DateTime(timezone=True))
+    email_verification_sent_count = db.Column(db.Integer, nullable=False, default=0)
+    email_verification_sent_window_start = db.Column(db.DateTime(timezone=True))
 
     profile = db.relationship(
         "UserProfile",
@@ -60,4 +67,21 @@ class UserProfile(db.Model):
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         date_str = self.exam_date.isoformat() if isinstance(self.exam_date, date) else "N/A"
         return f"<UserProfile user_id={self.user_id} exam_date={date_str}>"
+
+
+class EmailVerificationTicket(db.Model):
+    __tablename__ = "email_verification_tickets"
+
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    code = db.Column(db.String(12), nullable=False)
+    language = db.Column(db.String(8), nullable=False, default="en")
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    last_sent_at = db.Column(db.DateTime(timezone=True))
+    resend_count = db.Column(db.Integer, default=0, nullable=False)
+    attempts = db.Column(db.Integer, default=0, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return f"<EmailVerificationTicket email={self.email}>"
 

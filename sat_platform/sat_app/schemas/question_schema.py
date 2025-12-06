@@ -29,7 +29,7 @@ class QuestionCreateSchema(Schema):
     stem_text = fields.String(required=True)
     choices = fields.Dict(required=True)
     correct_answer = fields.Dict(required=True)
-    difficulty_level = fields.Integer(validate=validate.Range(min=1, max=5))
+    difficulty_level = fields.Integer(validate=validate.Range(min=1, max=5), allow_none=True, load_default=None)
     irt_a = fields.Float(allow_none=True)
     irt_b = fields.Float(allow_none=True)
     skill_tags = fields.List(fields.String())

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/app-shell";
 import { PlanBlocks } from "@/components/dashboard/plan-blocks";
@@ -186,7 +186,7 @@ export function DashboardView() {
 
         <section className="card-ambient rounded-3xl border border-white/10 bg-[#0b1424] p-6">
           {renderSectionHeader("plan", t("plan.card.title"), t("plan.card.subtitle"))}
-          {!collapsed.plan && (
+          <Collapsible isOpen={!collapsed.plan}>
             <div className="mt-5 flex flex-col gap-5 lg:flex-row">
               <div className="card-ambient flex-1 rounded-2xl border border-white/10 bg-white/5 p-4">
                 {isInitialPlanLoading ? (
@@ -222,7 +222,7 @@ export function DashboardView() {
                         key={`${note.body}-${idx}`}
                         className="card-ambient space-y-1 rounded-xl border border-white/10 bg-black/10 p-2"
                       >
-                        <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-white/50">
+                        <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-white">
                           <span
                             className={`h-1.5 w-1.5 rounded-full ${
                               note.priority === "warning"
@@ -232,7 +232,9 @@ export function DashboardView() {
                                 : "bg-sky-300"
                             }`}
                           />
-                          {note.title || t("plan.hero.noteDefaultTitle")}
+                          <span className="font-semibold text-white/90">
+                            {note.title || t("plan.hero.noteDefaultTitle")}
+                          </span>
                         </div>
                         <p className="text-sm text-white/80">{note.body}</p>
                       </div>
@@ -241,12 +243,12 @@ export function DashboardView() {
                 </div>
               </div>
             </div>
-          )}
+          </Collapsible>
         </section>
 
         <section className="card-ambient rounded-3xl border border-white/10 bg-[#0b1424] p-6">
           {renderSectionHeader("mastery", t("mastery.card.title"), t("mastery.card.subtitle"))}
-          {!collapsed.mastery && (
+          <Collapsible isOpen={!collapsed.mastery}>
             <div className="mt-5">
               {masteryQuery.isLoading ? (
                 <p className="text-sm text-white/50">{t("mastery.loading")}</p>
@@ -256,10 +258,22 @@ export function DashboardView() {
                 <MasteryProgress mastery={masteryQuery.data ?? []} />
               )}
             </div>
-          )}
+          </Collapsible>
         </section>
       </div>
     </AppShell>
+  );
+}
+
+function Collapsible({ isOpen, children }: { isOpen: boolean; children: ReactNode }) {
+  return (
+    <div
+      className={`grid transition-all duration-300 ease-in-out ${
+        isOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+      }`}
+    >
+      <div className="overflow-hidden">{children}</div>
+    </div>
   );
 }
 

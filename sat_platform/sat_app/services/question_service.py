@@ -7,7 +7,14 @@ from typing import Optional
 from sqlalchemy.orm import joinedload
 
 from ..extensions import db
-from ..models import Passage, Question, QuestionExplanationCache, QuestionFigure
+from ..models import (
+    Passage,
+    Question,
+    QuestionExplanationCache,
+    QuestionFigure,
+    UserQuestionLog,
+    QuestionReview,
+)
 
 
 def list_questions(
@@ -75,6 +82,8 @@ def update_question(question: Question, payload: dict) -> Question:
 
 
 def delete_question(question: Question) -> None:
+    UserQuestionLog.query.filter_by(question_id=question.id).delete(synchronize_session=False)
+    QuestionReview.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     QuestionExplanationCache.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     QuestionFigure.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     db.session.delete(question)

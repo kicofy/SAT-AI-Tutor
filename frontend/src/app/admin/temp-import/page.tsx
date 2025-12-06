@@ -1534,9 +1534,9 @@ export default function TempImportPage() {
       </AppShell>
 
       {isAdmin && figureModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-6">
-          <div className="w-full max-w-4xl rounded-2xl bg-[#050E1F] shadow-2xl">
-            <div className="max-h-[90vh] overflow-y-auto p-5 space-y-4">
+        <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="modal-panel flex w-full max-w-4xl flex-col rounded-2xl bg-[#050E1F] shadow-2xl max-h-[95vh]">
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-base font-semibold text-white">
@@ -1560,7 +1560,7 @@ export default function TempImportPage() {
                   </div>
                 ) : figureModal.source ? (
                   <>
-                    <div className="max-h-[560px] overflow-auto rounded-xl bg-black/30 p-4">
+                    <div className="rounded-xl bg-black/30 p-4">
                       <FigureCropper
                         source={figureModal.source}
                         selection={figureModal.selection}
@@ -1619,30 +1619,30 @@ export default function TempImportPage() {
                   </div>
                 )}
               </div>
-              {figureError && (
-                <p className="text-xs text-red-400">{figureError}</p>
-              )}
-              <div className="flex flex-wrap justify-end gap-3">
-                <button
-                  className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80"
-                  onClick={closeFigureModal}
-                  disabled={figureSaving}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-[#050E1F]"
-                  onClick={handleSaveFigure}
-                  disabled={
-                    figureSaving ||
-                    figureModal.loading ||
-                    !figureModal.source ||
-                    !figureModal.selection
-                  }
-                >
-                  {figureSaving ? "Saving..." : "Save figure"}
-                </button>
-              </div>
+            </div>
+            {figureError && (
+              <p className="px-5 text-xs text-red-400">{figureError}</p>
+            )}
+            <div className="flex flex-wrap justify-end gap-3 border-t border-white/5 px-5 py-4">
+              <button
+                className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80"
+                onClick={closeFigureModal}
+                disabled={figureSaving}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-[#050E1F]"
+                onClick={handleSaveFigure}
+                disabled={
+                  figureSaving ||
+                  figureModal.loading ||
+                  !figureModal.source ||
+                  !figureModal.selection
+                }
+              >
+                {figureSaving ? "Saving..." : "Save figure"}
+              </button>
             </div>
           </div>
         </div>

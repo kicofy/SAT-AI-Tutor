@@ -1,4 +1,11 @@
 import { api } from "@/lib/http";
+import {
+  AdminSource,
+  AdminSourceDetail,
+  AdminUser,
+  PaginatedResponse,
+  AdminQuestion,
+} from "@/types/admin";
 
 export async function ingestPdf(file: File) {
   const formData = new FormData();
@@ -80,6 +87,75 @@ type QuestionListParams = {
 
 export async function listQuestions(params?: QuestionListParams) {
   const { data } = await api.get("/api/admin/questions", { params });
+  return data;
+}
+
+export async function getAdminUsers(params: {
+  page?: number;
+  per_page?: number;
+  search?: string;
+  role?: string;
+  verified?: string;
+}): Promise<PaginatedResponse<AdminUser>> {
+  const { data } = await api.get("/api/admin/users", { params });
+  return data;
+}
+
+export async function getAdminUser(userId: number): Promise<{ user: AdminUser }> {
+  const { data } = await api.get(`/api/admin/users/${userId}`);
+  return data;
+}
+
+export async function updateAdminUser(
+  userId: number,
+  payload: Partial<Pick<AdminUser, "email" | "username" | "role">> & {
+    language_preference?: string;
+    reset_password?: string;
+  }
+): Promise<{ user: AdminUser }> {
+  const { data } = await api.patch(`/api/admin/users/${userId}`, payload);
+  return data;
+}
+
+export async function getAdminQuestions(params: {
+  page?: number;
+  per_page?: number;
+  section?: string;
+  question_uid?: string;
+  question_id?: number;
+  source_id?: number;
+}): Promise<{ items: AdminQuestion[]; page: number; per_page: number; total: number }> {
+  const { data } = await api.get("/api/admin/questions", { params });
+  return data;
+}
+
+export async function getAdminQuestion(questionId: number): Promise<{ question: AdminQuestion }> {
+  const { data } = await api.get(`/api/admin/questions/${questionId}`);
+  return data;
+}
+
+export async function updateAdminQuestion(
+  questionId: number,
+  payload: Partial<AdminQuestion>
+): Promise<{ question: AdminQuestion }> {
+  const { data } = await api.put(`/api/admin/questions/${questionId}`, payload);
+  return data;
+}
+
+export async function getAdminSources(params: {
+  page?: number;
+  per_page?: number;
+  search?: string;
+}): Promise<PaginatedResponse<AdminSource>> {
+  const { data } = await api.get("/api/admin/sources", { params });
+  return data;
+}
+
+export async function getAdminSourceDetail(
+  sourceId: number,
+  params?: { page?: number; per_page?: number }
+): Promise<AdminSourceDetail> {
+  const { data } = await api.get(`/api/admin/sources/${sourceId}`, { params });
   return data;
 }
 

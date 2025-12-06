@@ -1,0 +1,9 @@
+你好，{{ name }}：
+
+你的 SAT AI Tutor 验证码是 {{ code }}，{{ expires_minutes }} 分钟内有效。请在网页或 App 中输入该验证码完成邮箱验证。
+
+若非本人操作，请忽略本邮件，你的账号不会受到影响。
+
+SAT AI Tutor
+support@aisatmentor.com
+

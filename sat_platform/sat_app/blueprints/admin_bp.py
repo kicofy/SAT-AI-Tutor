@@ -18,6 +18,7 @@ from flask import Blueprint, Response, abort, current_app, jsonify, request, sen
 from flask_jwt_extended import current_user, jwt_required
 from marshmallow import ValidationError
 from werkzeug.utils import secure_filename
+from sqlalchemy import func, or_
 
 from ..extensions import db
 from ..models import (
@@ -27,9 +28,11 @@ from ..models import (
     QuestionExplanationCache,
     QuestionSource,
     UserQuestionLog,
+    User,
+    Question,
 )
-from ..schemas import ManualParseSchema, QuestionCreateSchema, QuestionSchema
-from ..services import question_service, openai_log
+from ..schemas import ManualParseSchema, QuestionCreateSchema, QuestionSchema, UserSchema
+from ..services import question_service, openai_log, mail_service
 from ..services.skill_taxonomy import canonicalize_tags
 from ..services.job_events import job_event_broker
 from ..tasks.question_tasks import process_job
@@ -39,7 +42,38 @@ admin_bp = Blueprint("admin_bp", __name__)
 question_create_schema = QuestionCreateSchema()
 question_schema = QuestionSchema()
 manual_parse_schema = ManualParseSchema()
+admin_user_schema = UserSchema()
 FIGURE_DIR_NAME = "question_figures"
+
+
+def _paginate(query, page: int, per_page: int):
+    per_page = max(1, min(per_page, 100))
+    page = max(page, 1)
+    return query.paginate(page=page, per_page=per_page, error_out=False)
+
+
+def _serialize_user(user: User) -> dict:
+    data = admin_user_schema.dump(user)
+    data["profile"] = data.get("profile") or {}
+    data["created_at"] = user.created_at.isoformat() if user.created_at else None
+    return data
+
+
+def _serialize_question(question: Question) -> dict:
+    data = question_schema.dump(question)
+    data["source"] = _serialize_source(question.source)
+    return data
+
+
+def _pagination_payload(pagination) -> dict:
+    return {
+        "page": pagination.page,
+        "per_page": pagination.per_page,
+        "pages": pagination.pages,
+        "total": pagination.total,
+        "has_next": pagination.has_next,
+        "has_prev": pagination.has_prev,
+    }
 
 
 def _create_question_source(*, filename: str, stored_path: Path, uploader_id: int, original_name: str | None = None) -> QuestionSource:
@@ -144,8 +178,6 @@ def _coerce_draft_payload(payload: dict | None) -> dict:
     if metadata_json and not data.get("metadata"):
         data["metadata"] = metadata_json
 
-    if not data.get("difficulty_level"):
-        data["difficulty_level"] = 2
     data["has_figure"] = bool(data.get("has_figure"))
 
     if isinstance(data.get("sub_section"), str) and not data["sub_section"].strip():
@@ -264,6 +296,98 @@ def ping():
     return jsonify({"module": "admin", "status": "ok"})
 
 
+@admin_bp.get("/users")
+@jwt_required()
+def list_users_admin():
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+
+    page = int(request.args.get("page", 1))
+    per_page = int(request.args.get("per_page", 20))
+    search = (request.args.get("search") or "").strip().lower()
+    role = request.args.get("role")
+    verified = request.args.get("verified")
+
+    query = User.query.order_by(User.created_at.desc())
+    if search:
+        like = f"%{search}%"
+        query = query.filter(
+            or_(
+                func.lower(User.email).like(like),
+                func.lower(User.username).like(like),
+            )
+        )
+    if role:
+        query = query.filter_by(role=role)
+    if verified in {"true", "false"}:
+        query = query.filter_by(is_email_verified=(verified == "true"))
+
+    pagination = _paginate(query, page, per_page)
+    return jsonify(
+        {
+            "items": [_serialize_user(user) for user in pagination.items],
+            "pagination": _pagination_payload(pagination),
+        }
+    )
+
+
+@admin_bp.get("/users/<int:user_id>")
+@jwt_required()
+def get_user_admin(user_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    user = db.session.get(User, user_id)
+    if not user:
+        abort(404)
+    return jsonify({"user": _serialize_user(user)})
+
+
+@admin_bp.patch("/users/<int:user_id>")
+@jwt_required()
+def update_user_admin(user_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    user = db.session.get(User, user_id)
+    if not user:
+        abort(404)
+    payload = request.get_json() or {}
+    allowed_roles = {"student", "admin"}
+    updated = False
+    email = payload.get("email")
+    if email and email.lower() != user.email:
+        if User.query.filter_by(email=email.lower()).first():
+            return jsonify({"message": "Email already registered"}), HTTPStatus.CONFLICT
+        user.email = email.lower()
+        updated = True
+    username = payload.get("username")
+    if username and username.lower() != (user.username or "").lower():
+        if User.query.filter(func.lower(User.username) == username.lower()).first():
+            return jsonify({"message": "Username already taken"}), HTTPStatus.CONFLICT
+        user.username = username
+        updated = True
+    role = payload.get("role")
+    if role and role in allowed_roles and role != user.role:
+        user.role = role
+        updated = True
+    language = payload.get("language_preference")
+    if language:
+        if not user.profile:
+            from ..models import UserProfile
+
+            user.profile = UserProfile(language_preference=language, daily_available_minutes=60)
+        else:
+            user.profile.language_preference = language
+        updated = True
+    if payload.get("reset_password"):
+        new_pw = payload["reset_password"]
+        user.password_hash = hash_password(new_pw)
+        updated = True
+    if updated:
+        db.session.add(user)
+        db.session.commit()
+    return jsonify({"user": _serialize_user(user)})
+
+
 @admin_bp.route("/questions", methods=["GET"])
 @jwt_required()
 def list_questions():
@@ -342,6 +466,54 @@ def clear_question_explanations(question_id: int):
     )
     db.session.commit()
     return jsonify({"message": "Cleared cached explanations", "deleted": cache_deleted}), HTTPStatus.OK
+
+
+@admin_bp.get("/sources")
+@jwt_required()
+def list_sources_admin():
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    page = int(request.args.get("page", 1))
+    per_page = int(request.args.get("per_page", 20))
+    search = (request.args.get("search") or "").strip().lower()
+
+    query = QuestionSource.query.order_by(QuestionSource.created_at.desc())
+    if search:
+        like = f"%{search}%"
+        query = query.filter(func.lower(QuestionSource.filename).like(like))
+    pagination = _paginate(query, page, per_page)
+    items = []
+    for source in pagination.items:
+        data = _serialize_source(source)
+        data["created_at"] = source.created_at.isoformat() if source.created_at else None
+        data["question_count"] = source.questions.count()
+        items.append(data)
+    return jsonify({"items": items, "pagination": _pagination_payload(pagination)})
+
+
+@admin_bp.get("/sources/<int:source_id>")
+@jwt_required()
+def get_source_detail(source_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    source = db.session.get(QuestionSource, source_id)
+    if not source:
+        abort(404)
+    page = int(request.args.get("page", 1))
+    per_page = int(request.args.get("per_page", 20))
+    questions_query = Question.query.filter_by(source_id=source.id).order_by(Question.id.asc())
+    pagination = _paginate(questions_query, page, per_page)
+    return jsonify(
+        {
+            "source": {
+                **(_serialize_source(source) or {}),
+                "created_at": source.created_at.isoformat() if source.created_at else None,
+                "question_count": source.questions.count(),
+            },
+            "questions": [_serialize_question(q) for q in pagination.items],
+            "pagination": _pagination_payload(pagination),
+        }
+    )
 
 
 def _serialize_job(job: QuestionImportJob):
@@ -587,6 +759,40 @@ def get_openai_logs():
         return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
     limit = int(request.args.get("limit", 100))
     return jsonify({"logs": openai_log.get_logs(limit)})
+
+
+@admin_bp.post("/email/test")
+@jwt_required()
+def send_test_email():
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+
+    payload = request.get_json() or {}
+    recipient = (payload.get("email") or current_user.email or "").strip()
+    if not recipient:
+        return jsonify({"message": "Recipient email required"}), HTTPStatus.BAD_REQUEST
+
+    subject = (payload.get("subject") or "SAT AI Tutor test email").strip()
+    message = (
+        payload.get("message")
+        or "This is a test email generated by SAT AI Tutor."
+    )
+    html = payload.get("html") or f"<p>{message}</p>"
+
+    try:
+        mail_service.send_email(
+            to=recipient,
+            subject=subject,
+            text=message,
+            html=html,
+        )
+    except mail_service.MailServiceError as exc:
+        return (
+            jsonify({"message": "mail_failed", "detail": str(exc)}),
+            HTTPStatus.BAD_GATEWAY,
+        )
+
+    return jsonify({"message": "mail_sent", "recipient": recipient})
 
 
 @admin_bp.get("/questions/imports/events")

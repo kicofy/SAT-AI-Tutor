@@ -42,8 +42,11 @@ export type MasteryEntry = {
 export type ProgressEntry = {
   day: string;
   questions_answered: number;
-  accuracy: number;
+  accuracy: number | null;
   sessions_completed: number;
+  avg_difficulty?: number | null;
+  predicted_score_rw?: number | null;
+  predicted_score_math?: number | null;
 };
 
 export type PlanTask = {

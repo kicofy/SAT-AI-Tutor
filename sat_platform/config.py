@@ -85,6 +85,8 @@ class BaseConfig:
     MAIL_PORT = int(os.getenv("MAIL_PORT", "587"))
     MAIL_USE_TLS = os.getenv("MAIL_USE_TLS", "true").lower() in {"1", "true", "yes"}
     MAIL_USE_SSL = os.getenv("MAIL_USE_SSL", "false").lower() in {"1", "true", "yes"}
+    MAIL_ENABLED = os.getenv("MAIL_ENABLED", "true").lower() in {"1", "true", "yes"}
+    MAIL_TIMEOUT = int(os.getenv("MAIL_TIMEOUT", "30"))
     MAIL_USERNAME = os.getenv("MAIL_USERNAME", "")
     MAIL_PASSWORD = os.getenv("MAIL_PASSWORD", "")
     MAIL_DEFAULT_SENDER = os.getenv("MAIL_DEFAULT_SENDER", "noreply@example.com")
@@ -116,6 +118,7 @@ class TestConfig(BaseConfig):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite+pysqlite:///:memory:"
     JWT_SECRET_KEY = "test-secret"
+    MAIL_ENABLED = False
 
 
 CONFIG_ALIASES: dict[str, Type[BaseConfig]] = {

@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import current_user, get_jwt_identity, jwt_required
 from marshmallow import ValidationError
 from sqlalchemy import func
+from werkzeug.exceptions import BadRequest
 
 from ..extensions import db
 from ..models import User, UserProfile
@@ -15,9 +16,13 @@ from ..schemas import (
     AdminCreateSchema,
     LoginSchema,
     RegisterSchema,
+    UpdateProfileSchema,
+    PasswordChangeSchema,
+    VerificationRequestSchema,
     UserSchema,
 )
 from ..utils import generate_access_token, hash_password, verify_password
+from ..services import verification_service
 
 auth_bp = Blueprint("auth_bp", __name__)
 
@@ -25,6 +30,9 @@ register_schema = RegisterSchema()
 login_schema = LoginSchema()
 admin_create_schema = AdminCreateSchema()
 user_schema = UserSchema()
+update_profile_schema = UpdateProfileSchema()
+password_change_schema = PasswordChangeSchema()
+verification_request_schema = VerificationRequestSchema()
 
 
 @auth_bp.errorhandler(ValidationError)
@@ -58,6 +66,11 @@ def register():
                 HTTPStatus.CONFLICT,
             )
 
+    try:
+        verification_service.consume_signup_code(email, payload["code"])
+    except BadRequest as exc:
+        return jsonify({"message": exc.description}), HTTPStatus.BAD_REQUEST
+
     profile_payload = payload.get("profile") or {}
     password = payload.pop("password")
 
@@ -67,6 +80,7 @@ def register():
         password_hash=hash_password(password),
         role="student",
         is_root=False,
+        is_email_verified=True,
     )
     user.profile = _build_profile(profile_payload)
 
@@ -82,6 +96,18 @@ def register():
         ),
         HTTPStatus.CREATED,
     )
+
+
+@auth_bp.post("/register/request-code")
+def request_register_code():
+    payload = verification_request_schema.load(request.get_json() or {})
+    try:
+        verification_service.request_signup_code(
+            payload["email"].lower(), payload.get("language_preference", "en")
+        )
+    except BadRequest as exc:
+        return jsonify({"message": exc.description}), HTTPStatus.BAD_REQUEST
+    return jsonify({"message": "sent"})
 
 
 @auth_bp.post("/login")
@@ -102,6 +128,17 @@ def login():
             HTTPStatus.UNAUTHORIZED,
         )
 
+    if not user.is_email_verified:
+        return (
+            jsonify(
+                {
+                    "error": "email_not_verified",
+                    "email": user.email,
+                }
+            ),
+            HTTPStatus.FORBIDDEN,
+        )
+
     return jsonify(
         {"access_token": generate_access_token(user), "user": user_schema.dump(user)}
     )
@@ -117,6 +154,48 @@ def me():
     if user is None:
         return jsonify({"message": "User not found"}), HTTPStatus.NOT_FOUND
     return jsonify({"user": user_schema.dump(user)})
+
+
+@auth_bp.patch("/profile")
+@jwt_required()
+def update_profile():
+    payload = update_profile_schema.load(request.get_json() or {})
+    if not payload:
+        return jsonify({"message": "No changes supplied"}), HTTPStatus.BAD_REQUEST
+
+    updated = False
+    email = payload.get("email")
+    language = payload.get("language_preference")
+
+    if email and email.lower() != current_user.email:
+        if User.query.filter_by(email=email.lower()).first():
+            return jsonify({"message": "Email already registered"}), HTTPStatus.CONFLICT
+        current_user.email = email.lower()
+        updated = True
+
+    if language:
+        if not current_user.profile:
+            current_user.profile = UserProfile(language_preference=language)
+        else:
+            current_user.profile.language_preference = language
+        updated = True
+
+    if not updated:
+        return jsonify({"message": "No changes supplied"}), HTTPStatus.BAD_REQUEST
+
+    db.session.commit()
+    return jsonify({"user": user_schema.dump(current_user)})
+
+
+@auth_bp.post("/password")
+@jwt_required()
+def change_password():
+    payload = password_change_schema.load(request.get_json() or {})
+    if not verify_password(payload["current_password"], current_user.password_hash):
+        return jsonify({"message": "Incorrect current password"}), HTTPStatus.BAD_REQUEST
+    current_user.password_hash = hash_password(payload["new_password"])
+    db.session.commit()
+    return jsonify({"message": "Password updated"})
 
 
 @auth_bp.post("/admin/create")
@@ -144,6 +223,7 @@ def create_admin():
         password_hash=hash_password(password),
         role="admin",
         is_root=False,
+        is_email_verified=True,
     )
     user.profile = UserProfile(daily_available_minutes=60, language_preference="bilingual")
 

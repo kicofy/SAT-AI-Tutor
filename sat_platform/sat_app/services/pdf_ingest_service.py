@@ -17,6 +17,7 @@ from flask import current_app
 from ..schemas.question_schema import QuestionCreateSchema
 from .openai_log import log_event
 from .skill_taxonomy import canonicalize_tags, iter_skill_tags
+from .difficulty_service import difficulty_prompt_block
 
 question_schema = QuestionCreateSchema()
 SKILL_TAG_PROMPT = ", ".join(iter_skill_tags())
@@ -333,11 +334,15 @@ def _normalize_question(
         "- choices: object whose keys are capital letters (A,B,C,...) and values are choice texts.\n"
         "- correct_answer: object like {\"value\": \"A\"}. If unknown, set value to null.\n"
         "- has_figure: boolean carried over from the extracted payload; keep true for any chart/table/image question so the UI can render the figure separately.\n"
-        "- difficulty_level: integer 1-5 (set 2 if unspecified).\n"
+        "- difficulty_level: integer 1-5. "
+        "Use the rubric below and also provide a difficulty_assessment object describing reasoning and expected_time_sec.\n"
         "- skill_tags: choose up to TWO entries from this canonical list only: "
         f"{SKILL_TAG_PROMPT}. Return an empty array if unsure.\n"
         "- metadata: optional dict for provenance info.\n"
-        "Do NOT include legacy fields such as prompt, metadata_json, or explanations. Respond with JSON only."
+        "Do NOT include legacy fields such as prompt, metadata_json, or explanations. Respond with JSON only.\n"
+        f"{difficulty_prompt_block()}\n"
+        "difficulty_assessment must be shaped like "
+        '{"level":3,"expected_time_sec":75,"rationale":"Two-step evidence match."}'
     )
     schema_hint = ""
     user_prompt = json.dumps(question_payload, ensure_ascii=False, indent=2)
@@ -365,6 +370,7 @@ def _normalize_question(
         job_id=job_id,
     )
     data = json.loads(raw_text)
+    difficulty_assessment = data.pop("difficulty_assessment", None)
 
     data["section"] = _coerce_section(data.get("section"))
     data["has_figure"] = bool(question_payload.get("has_figure"))
@@ -385,6 +391,13 @@ def _normalize_question(
         data["passage"] = None
     data["skill_tags"] = _sanitize_skill_tags(data.get("skill_tags"))
     normalized = question_schema.load(data)
+    if difficulty_assessment:
+        metadata = normalized.get("metadata") or {}
+        metadata["difficulty_assessment"] = difficulty_assessment
+        normalized["metadata"] = metadata
+        expected_time = difficulty_assessment.get("expected_time_sec")
+        if expected_time and not normalized.get("estimated_time_sec"):
+            normalized["estimated_time_sec"] = int(expected_time)
     solver_result = _solve_question_with_ai(
         normalized,
         question_payload=question_payload,

@@ -6,8 +6,9 @@ import os
 from time import perf_counter
 
 import click
-from flask import Flask, g, request
+from flask import Flask, g, request, current_app
 from flask_jwt_extended import JWTManager
+from sqlalchemy import inspect, text
 
 from config import resolve_config
 from .blueprints import BLUEPRINTS
@@ -140,6 +141,7 @@ def _register_request_hooks(app: Flask) -> None:
 def _ensure_schema(app: Flask) -> None:
     with app.app_context():
         db.create_all()
+        _ensure_email_verification_columns()
 
 
 def _register_cli(app: Flask) -> None:
@@ -264,8 +266,6 @@ def _register_cli(app: Flask) -> None:
 
 
 def _ensure_root_admin(app: Flask) -> None:
-    from sqlalchemy import inspect
-
     from .models import User, UserProfile
 
     with app.app_context():
@@ -285,6 +285,7 @@ def _ensure_root_admin(app: Flask) -> None:
             password_hash=hash_password(password),
             role="admin",
             is_root=True,
+            is_email_verified=True,
         )
         root.profile = UserProfile(
             daily_available_minutes=120,
@@ -292,4 +293,61 @@ def _ensure_root_admin(app: Flask) -> None:
         )
         db.session.add(root)
         db.session.commit()
+
+
+def _ensure_email_verification_columns() -> None:
+    inspector = inspect(db.engine)
+    if "users" not in inspector.get_table_names():
+        return
+    columns = {col["name"] for col in inspector.get_columns("users")}
+    statements: list[str] = []
+    dialect = db.engine.dialect.name
+    boolean_type = "BOOLEAN" if dialect != "sqlite" else "INTEGER"
+    datetime_type = "TIMESTAMP" if dialect != "sqlite" else "TEXT"
+    default_true = "TRUE" if dialect != "sqlite" else "1"
+
+    if "is_email_verified" not in columns:
+        statements.append(
+            f"ALTER TABLE users ADD COLUMN is_email_verified {boolean_type} NOT NULL DEFAULT {default_true}"
+        )
+    if "email_verification_code" not in columns:
+        statements.append("ALTER TABLE users ADD COLUMN email_verification_code VARCHAR(12)")
+    if "email_verification_expires_at" not in columns:
+        statements.append(
+            f"ALTER TABLE users ADD COLUMN email_verification_expires_at {datetime_type}"
+        )
+    if "email_verification_attempts" not in columns:
+        statements.append(
+            "ALTER TABLE users ADD COLUMN email_verification_attempts INTEGER NOT NULL DEFAULT 0"
+        )
+    if "email_verification_sent_at" not in columns:
+        statements.append(
+            f"ALTER TABLE users ADD COLUMN email_verification_sent_at {datetime_type}"
+        )
+    if "email_verification_sent_count" not in columns:
+        statements.append(
+            "ALTER TABLE users ADD COLUMN email_verification_sent_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "email_verification_sent_window_start" not in columns:
+        statements.append(
+            f"ALTER TABLE users ADD COLUMN email_verification_sent_window_start {datetime_type}"
+        )
+
+    if not statements:
+        return
+
+    connection = db.engine.connect()
+    trans = connection.begin()
+    try:
+        for statement in statements:
+            connection.execute(text(statement))
+        trans.commit()
+    except Exception:  # pragma: no cover - defensive logging
+        trans.rollback()
+        current_app.logger.debug(
+            "Skipping automatic email verification column patch",
+            exc_info=True,
+        )
+    finally:
+        connection.close()
 

@@ -57,12 +57,15 @@ function PlanBlockAction({ blockId, task }: { blockId: string; task?: PlanTask }
       total: task?.questions_target ?? 0,
     });
   }
+  const baseClass =
+    "mt-3 inline-flex min-h-[34px] items-center justify-center rounded-full border border-white/15 px-3 py-1.5 text-xs font-semibold transition";
+  const variantClass = isCompleted
+    ? "chip-soft chip-soft--success pointer-events-none"
+    : "chip-soft hover:border-white/40 hover:text-white";
   return (
     <Link
       href={`/plan/tasks/${encodeURIComponent(blockId)}`}
-      className={`mt-3 text-xs font-semibold ${
-        isCompleted ? "chip-soft chip-soft--success pointer-events-none" : "btn-ghost"
-      }`}
+      className={`${baseClass} ${variantClass}`}
       aria-disabled={isCompleted}
     >
       {label}

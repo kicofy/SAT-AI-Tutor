@@ -10,6 +10,7 @@ export type User = {
   email: string;
   username: string;
   role: "student" | "admin";
+  is_email_verified?: boolean;
   profile?: UserProfile | null;
 };
 

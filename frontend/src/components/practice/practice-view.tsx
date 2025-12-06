@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { DashboardCard } from "@/components/ui/dashboard-card";
 import {
@@ -21,6 +21,12 @@ import {
   QuestionFigureRef,
   SessionProgressEntry,
 } from "@/types/session";
+import {
+  ExplanationViewer,
+  HighlightedText,
+  StepDirective,
+  AnimExplanation,
+} from "@/components/practice/explanation-viewer";
 import { extractErrorMessage } from "@/lib/errors";
 import { AxiosError } from "axios";
 import { env } from "@/lib/env";
@@ -37,34 +43,7 @@ type PracticeViewProps = {
   autoResumeDiagnostic?: boolean;
 };
 
-type StepDirective = {
-  target: "passage" | "stem" | "choices" | "figure";
-  text: string;
-  action?: "highlight" | "underline" | "circle" | "strike" | "note" | "color" | "font";
-  cue?: string;
-  emphasis?: string;
-  figure_id?: number | string;
-  choice_id?: string | number;
-};
-
 type TranslateFn = ReturnType<typeof useI18n>["t"];
-
-type AnimStep = {
-  title?: string;
-  type?: string;
-  narration?: string | Record<string, string>;
-  duration_ms?: number;
-  delay_ms?: number;
-  animations?: StepDirective[];
-  board_notes?: string[];
-};
-
-type AnimExplanation = {
-  protocol_version?: string;
-  summary?: string;
-  language?: string;
-  steps?: AnimStep[];
-};
 
 type QuestionProgress = {
   isCorrect?: boolean;
@@ -112,6 +91,25 @@ export function PracticeView({ planBlockId, autoResumeDiagnostic = false }: Prac
   const [isAborting, setIsAborting] = useState(false);
   const [planTask, setPlanTask] = useState<PlanTask | null>(null);
   const [hasAutoResumedDiagnostic, setHasAutoResumedDiagnostic] = useState(false);
+  const [questionStartTime, setQuestionStartTime] = useState<number | null>(null);
+  const lastQuestionIdRef = useRef<number | null>(null);
+
+  const updateLocalSessionProgress = useCallback(
+    (entry: SessionProgressEntry) => {
+      setSession((prev) => {
+        if (!prev) return prev;
+        const progress = Array.isArray(prev.questions_done) ? [...prev.questions_done] : [];
+        const index = progress.findIndex((item) => item?.question_id === entry.question_id);
+        if (index >= 0) {
+          progress[index] = { ...progress[index], ...entry };
+        } else {
+          progress.push(entry);
+        }
+        return { ...prev, questions_done: progress };
+      });
+    },
+    []
+  );
 
   const pruneProgressForSession = useCallback((nextSession: Session) => {
     setQuestionProgress((prev) => {
@@ -255,6 +253,25 @@ export function PracticeView({ planBlockId, autoResumeDiagnostic = false }: Prac
   const currentQuestion: SessionQuestion | undefined =
     session?.questions_assigned[currentIndex];
 
+  const currentQuestionId = currentQuestion?.question_id ?? null;
+
+  useEffect(() => {
+    if (!currentQuestionId) {
+      setQuestionStartTime(null);
+      lastQuestionIdRef.current = null;
+      return;
+    }
+    if (lastQuestionIdRef.current !== currentQuestionId) {
+      lastQuestionIdRef.current = currentQuestionId;
+      setQuestionStartTime(Date.now());
+    }
+  }, [currentQuestionId]);
+
+  const isLastQuestion =
+    session && currentQuestion
+      ? currentIndex + 1 >= session.questions_assigned.length
+      : false;
+
   const progressKey =
     session && currentQuestion
       ? keyForQuestion(session.id, currentQuestion.question_id)
@@ -358,15 +375,31 @@ useEffect(() => {
     return planDetail.blocks.find((block) => block.block_id === planBlockId) ?? null;
   }, [planBlockId, planDetail]);
 
+  const localAnsweredCount = useMemo(() => {
+    if (!session) {
+      return 0;
+    }
+    const prefix = `${session.id}-`;
+    return Object.entries(questionProgress).reduce((count, [key, entry]) => {
+      if (!key.startsWith(prefix)) {
+        return count;
+      }
+      return entry?.logId ? count + 1 : count;
+    }, 0);
+  }, [questionProgress, session]);
+
   const planTaskProgress = useMemo(() => {
     if (!isPlanTaskMode) {
       return null;
     }
-    const completed =
-      session?.questions_done?.length ??
-      planTask?.questions_completed ??
-      planTasksMap[planBlockId || ""]?.questions_completed ??
-      0;
+    let completed = session?.questions_done?.length ?? null;
+    if (!completed) {
+      completed =
+        localAnsweredCount ||
+        planTask?.questions_completed ||
+        planTasksMap[planBlockId || ""]?.questions_completed ||
+        0;
+    }
     const total =
       planTask?.questions_target ??
       planBlockDetail?.questions ??
@@ -374,7 +407,73 @@ useEffect(() => {
       planTasksMap[planBlockId || ""]?.questions_target ??
       0;
     return { completed, total };
-  }, [isPlanTaskMode, planTask, planTasksMap, planBlockDetail, planBlockId, session]);
+  }, [
+    isPlanTaskMode,
+    planTask,
+    planTasksMap,
+    planBlockDetail,
+    planBlockId,
+    session,
+    localAnsweredCount,
+  ]);
+
+  const goalSummary =
+    planDetail?.target_questions !== undefined
+      ? t("practice.goalSummary.value", { count: planDetail.target_questions })
+      : t("practice.goalSummary.custom");
+  const summaryStats = [
+    {
+      label: t("practice.summary.section"),
+      value:
+        sectionOptions.find((opt) => opt.id === prepConfig.section)?.label ?? prepConfig.section,
+    },
+    {
+      label: t("practice.summary.target"),
+      value: goalSummary,
+    },
+  ];
+
+  const planSessionStats = useMemo(() => {
+    if (!isPlanTaskMode) {
+      return null;
+    }
+    const sectionValue =
+      planBlockDetail?.section ||
+      session?.questions_assigned?.[0]?.section ||
+      sectionLabel ||
+      "";
+    let normalizedSection = sectionValue;
+    if (sectionValue === "Math") {
+      normalizedSection = t("practice.section.math.label");
+    } else if (sectionValue === "RW") {
+      normalizedSection = t("practice.section.rw.label");
+    }
+    const questionsTarget =
+      planBlockDetail?.questions ??
+      planTask?.questions_target ??
+      session?.questions_assigned.length ??
+      0;
+    const targetValue =
+      questionsTarget > 0 ? t("plan.block.questions", { count: questionsTarget }) : goalSummary;
+    return [
+      {
+        label: t("practice.summary.section"),
+        value: normalizedSection || t("common.unknown"),
+      },
+      {
+        label: t("practice.summary.target"),
+        value: targetValue,
+      },
+    ];
+  }, [
+    goalSummary,
+    isPlanTaskMode,
+    planBlockDetail,
+    planTask,
+    sectionLabel,
+    session,
+    t,
+  ]);
 
   const attemptStart = useCallback(async (): Promise<boolean> => {
     if (planBlockId) {
@@ -439,11 +538,17 @@ useEffect(() => {
     setIsChecking(true);
     setError(null);
     try {
+      const elapsedSeconds =
+        questionStartTime !== null
+          ? Math.max(1, Math.round((Date.now() - questionStartTime) / 1000))
+          : undefined;
       const response = await submitAnswer({
         session_id: session.id,
         question_id: currentQuestion.question_id,
         user_answer: { value: selectedChoice },
+        time_spent_sec: elapsedSeconds,
       });
+      setQuestionStartTime(null);
       setQuestionProgress((prev) => ({
         ...prev,
         [progressKey]: {
@@ -453,6 +558,48 @@ useEffect(() => {
           userChoice: selectedChoice,
         },
       }));
+      updateLocalSessionProgress({
+        question_id: currentQuestion.question_id,
+        log_id: response.log_id,
+        is_correct: response.is_correct,
+        user_answer: { value: selectedChoice },
+        answered_at: new Date().toISOString(),
+      });
+      if (isPlanTaskMode) {
+        setPlanTask((prev) => {
+          if (!prev) return prev;
+          const target = prev.questions_target ?? session.questions_assigned.length ?? 0;
+          const nextCompleted = Math.min((prev.questions_completed ?? 0) + 1, target);
+          if (nextCompleted === prev.questions_completed) {
+            return prev;
+          }
+          return { ...prev, questions_completed: nextCompleted };
+        });
+        if (planBlockId) {
+          setPlanTasksMap((prev) => {
+            const existing = prev[planBlockId];
+            if (!existing) return prev;
+            const target =
+              existing.questions_target ??
+              planBlockDetail?.questions ??
+              session.questions_assigned.length ??
+              0;
+            const nextCompleted = Math.min((existing.questions_completed ?? 0) + 1, target);
+            if (nextCompleted === existing.questions_completed) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [planBlockId]: { ...existing, questions_completed: nextCompleted },
+            };
+          });
+        }
+        if (userId) {
+          queryClient
+            .invalidateQueries({ queryKey: ["plan-today", userId] })
+            .catch(() => undefined);
+        }
+      }
     } catch (err: unknown) {
       if (err instanceof AxiosError && err.response?.status === 409) {
         const payload = err.response.data;
@@ -511,22 +658,6 @@ useEffect(() => {
     }
   }
 
-  const goalSummary =
-    planDetail?.target_questions !== undefined
-      ? t("practice.goalSummary.value", { count: planDetail.target_questions })
-      : t("practice.goalSummary.custom");
-  const summaryStats = [
-    {
-      label: t("practice.summary.section"),
-      value:
-        sectionOptions.find((opt) => opt.id === prepConfig.section)?.label ??
-        prepConfig.section,
-    },
-    {
-      label: t("practice.summary.target"),
-      value: goalSummary,
-    },
-  ];
   const activeTotalQuestions = activeSession?.questions_assigned.length ?? 0;
   const activeCompleted = activeSession?.questions_done?.length ?? 0;
   const activeRemaining = Math.max(activeTotalQuestions - activeCompleted, 0);
@@ -778,13 +909,23 @@ useEffect(() => {
             )}
           </>
         )}
-        <div className="flex flex-wrap gap-3">
-          {summaryStats.map((stat) => (
-            <div key={stat.label} className="stat-pill min-w-[140px] text-white">
-              <p className="text-[11px] uppercase tracking-wide text-white/60">{stat.label}</p>
-              <p className="text-base font-semibold">{stat.value}</p>
-            </div>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          {!isPlanTaskMode &&
+            summaryStats.map((stat) => (
+              <div key={stat.label} className="stat-pill min-w-[140px] text-white">
+                <p className="text-[11px] uppercase tracking-wide text-white/60">{stat.label}</p>
+                <p className="text-base font-semibold">{stat.value}</p>
+              </div>
+            ))}
+          {session && viewState === "active" && (
+            <button
+              type="button"
+              className="btn-ghost px-4 py-2 text-sm"
+              onClick={() => setFinishDialogOpen(true)}
+            >
+              {t("practice.button.finish")}
+            </button>
+          )}
         </div>
       </div>
       <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start">
@@ -794,21 +935,23 @@ useEffect(() => {
               title={t("practice.planTask.title")}
               subtitle={planBlockDetail.focus_skill_label ?? planBlockDetail.focus_skill}
             >
-              <p className="text-sm text-white/70">
-                {t("practice.planTask.meta", {
-                  section: planBlockDetail.section,
-                  minutes: planBlockDetail.minutes,
-                  questions: planBlockDetail.questions,
-                })}
-              </p>
-              {planTaskProgress ? (
-                <p className="mt-2 text-sm font-semibold text-white">
-                  {t("practice.planTask.progress", {
-                    completed: planTaskProgress.completed,
-                    total: planTaskProgress.total,
+              <div className="space-y-2">
+                <p className="text-sm text-white/70">
+                  {t("practice.planTask.meta", {
+                    section: planBlockDetail.section,
+                    minutes: planBlockDetail.minutes,
+                    questions: planBlockDetail.questions,
                   })}
                 </p>
-              ) : null}
+                {planTaskProgress ? (
+                  <p className="text-sm font-semibold text-white">
+                    {t("practice.planTask.progress", {
+                      completed: planTaskProgress.completed,
+                      total: planTaskProgress.total,
+                    })}
+                  </p>
+                ) : null}
+              </div>
             </DashboardCard>
           )}
       {!isPlanTaskMode && viewState === "prep" && session && (
@@ -1158,14 +1301,10 @@ useEffect(() => {
                   <button
                     className="btn-ghost px-4 py-2 text-sm"
                     onClick={() =>
-                      currentIndex + 1 >= session.questions_assigned.length
-                        ? setFinishDialogOpen(true)
-                        : goToQuestion(currentIndex + 1)
+                      isLastQuestion ? setFinishDialogOpen(true) : goToQuestion(currentIndex + 1)
                     }
                   >
-                    {currentIndex + 1 >= session.questions_assigned.length
-                      ? t("practice.button.finish")
-                      : t("practice.button.next")}
+                    {isLastQuestion ? t("practice.button.finish") : t("practice.button.next")}
                   </button>
                 </div>
               )}
@@ -1231,11 +1370,11 @@ useEffect(() => {
       </div>
       {isFinishDialogOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#050E1F]/80 px-4"
+          className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-[#050E1F]/80 px-4"
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#050E1F] p-6 shadow-2xl">
+          <div className="modal-panel w-full max-w-md rounded-2xl border border-white/10 bg-[#050E1F] p-6 shadow-2xl">
             <h3 className="text-lg font-semibold text-white">
               {t("practice.finish.confirm.title")}
             </h3>
@@ -1265,11 +1404,11 @@ useEffect(() => {
       )}
       {isAbortDialogOpen && activeSession && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#050E1F]/80 px-4"
+          className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-[#050E1F]/80 px-4"
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#050E1F] p-6 shadow-2xl">
+          <div className="modal-panel w-full max-w-md rounded-2xl border border-white/10 bg-[#050E1F] p-6 shadow-2xl">
             <h3 className="text-lg font-semibold text-white">
               {t("practice.abort.confirm.title")}
             </h3>
@@ -1346,264 +1485,4 @@ function FigureReference({
     </figure>
   );
 }
-
-function HighlightedText({
-  text,
-  directives,
-  className,
-}: {
-  text?: string | null;
-  directives: StepDirective[];
-  className?: string;
-}) {
-  const nodes = useMemo<ReactNode[]>(() => {
-    if (!text) return [];
-    let remaining = text;
-    let keyCounter = 0;
-    const segments: ReactNode[] = [];
-    const usable = directives.filter((d) => (d.text || "").trim().length > 0);
-    const pushText = (value: string) => {
-      if (!value) return;
-      keyCounter += 1;
-      segments.push(
-        <span key={`txt-${keyCounter}`} className="whitespace-pre-wrap">
-          {value}
-        </span>
-      );
-    };
-    if (!usable.length) {
-      pushText(text);
-      return segments;
-    }
-    usable.forEach((directive) => {
-      const snippet = directive.text.trim();
-      if (!snippet) {
-        return;
-      }
-      const lowerRemaining = remaining.toLowerCase();
-      const matchIndex = lowerRemaining.indexOf(snippet.toLowerCase());
-      if (matchIndex === -1) {
-        return;
-      }
-      const before = remaining.slice(0, matchIndex);
-      pushText(before);
-      const matchText = remaining.slice(matchIndex, matchIndex + snippet.length);
-      const styleClass = getDirectiveClass(directive.action);
-      keyCounter += 1;
-      segments.push(
-        <mark
-          key={`mark-${keyCounter}`}
-          className={`rounded px-0.5 text-white ${styleClass}`}
-          style={directive.emphasis ? { color: directive.emphasis } : undefined}
-          title={directive.cue}
-        >
-          {matchText}
-        </mark>
-      );
-      remaining = remaining.slice(matchIndex + snippet.length);
-    });
-    pushText(remaining);
-    return segments;
-  }, [text, directives]);
-
-  if (!text) {
-    return null;
-  }
-  return <div className={className}>{nodes}</div>;
-}
-
-function getDirectiveClass(action?: string) {
-  switch (action) {
-    case "underline":
-      return "underline decoration-amber-300";
-    case "circle":
-      return "outline outline-2 outline-amber-300 rounded-full";
-    case "strike":
-      return "line-through decoration-rose-300";
-    case "note":
-      return "bg-emerald-400/30 text-emerald-100";
-    case "color":
-      return "bg-transparent";
-    case "font":
-      return "italic text-sky-200";
-    default:
-      return "bg-amber-300/40";
-  }
-}
-
-/* eslint-disable react-hooks/set-state-in-effect */
-function ExplanationViewer({
-  explanation,
-  onDirectivesChange,
-  t,
-}: {
-  explanation: AnimExplanation;
-  onDirectivesChange: (directives: StepDirective[]) => void;
-  t: TranslateFn;
-}) {
-  const rawSteps: AnimStep[] = useMemo(() => explanation.steps ?? [], [explanation]);
-  const steps: AnimStep[] = useMemo(() => {
-    if (!explanation.summary) {
-      return rawSteps;
-    }
-    return [
-      ...rawSteps,
-      {
-        id: "session-summary",
-        type: "summary",
-        title: t("practice.explain.summaryTitle"),
-        narration: explanation.summary,
-        duration_ms: 2800,
-        delay_ms: 600,
-        animations: [],
-        board_notes: [],
-      },
-    ];
-  }, [rawSteps, explanation.summary, t]);
-  const language = explanation.language ?? "en";
-  const [currentStep, setCurrentStep] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [subtitle, setSubtitle] = useState("");
-
-  useEffect(() => {
-    setCurrentStep(0);
-    setIsPlaying(false);
-  }, [explanation]);
-
-  const narrationFor = useCallback(
-    (step: AnimStep | undefined) => {
-      if (!step) return "";
-      const narration = step.narration;
-      if (!narration) return "";
-      if (typeof narration === "string") return narration;
-      return narration[language] || narration.en || narration.zh || "";
-    },
-    [language]
-  );
-
-  useEffect(() => {
-    const step = steps[currentStep];
-    const text = narrationFor(step);
-    setSubtitle("");
-    if (!text) {
-      return;
-    }
-    let index = 0;
-    const interval = setInterval(() => {
-      index += 1;
-      setSubtitle(text.slice(0, index));
-      if (index >= text.length) {
-        clearInterval(interval);
-      }
-    }, 25);
-    return () => clearInterval(interval);
-  }, [currentStep, steps, narrationFor]);
-
-  useEffect(() => {
-    if (!isPlaying) return;
-    const step = steps[currentStep];
-    if (!step) return;
-    const total =
-      Math.max(step.duration_ms ?? 3000, 500) + Math.max(step.delay_ms ?? 500, 0);
-    const timer = setTimeout(() => {
-      if (currentStep < steps.length - 1) {
-        setCurrentStep((prev) => prev + 1);
-      } else {
-        setIsPlaying(false);
-      }
-    }, total);
-    return () => clearTimeout(timer);
-  }, [isPlaying, currentStep, steps]);
-
-  const goToStep = (nextIndex: number) => {
-    if (nextIndex < 0 || nextIndex >= steps.length) return;
-    setCurrentStep(nextIndex);
-    setIsPlaying(false);
-  };
-
-  const togglePlay = () => {
-    if (!steps.length) return;
-    setIsPlaying((prev) => !prev);
-  };
-
-  const step = steps[currentStep];
-
-  useEffect(() => {
-    onDirectivesChange(step?.animations ?? []);
-    return () => onDirectivesChange([]);
-  }, [step, onDirectivesChange]);
-
-  return (
-    <div className="space-y-4 rounded-xl border border-white/10 bg-white/5 p-4 text-xs text-white/80">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-semibold text-white">{t("practice.explain.title")}</p>
-          <p className="text-white/60">
-            {t("practice.explain.stepIndicator", {
-              current: currentStep + 1,
-              total: steps.length,
-            })}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/80 disabled:opacity-30"
-            onClick={() => goToStep(currentStep - 1)}
-            disabled={currentStep === 0}
-          >
-            ◀
-          </button>
-          <button
-            className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/80 disabled:opacity-30"
-            onClick={togglePlay}
-            disabled={!steps.length}
-          >
-            {isPlaying ? t("practice.explain.pause") : t("practice.explain.play")}
-          </button>
-          <button
-            className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/80 disabled:opacity-30"
-            onClick={() => goToStep(currentStep + 1)}
-            disabled={currentStep >= steps.length - 1}
-          >
-            ▶
-          </button>
-        </div>
-      </div>
-
-      {step && (
-        <div className="space-y-2">
-          <div className="rounded-lg border border-white/10 bg-[#050E1F]/40 p-3">
-            <p className="text-white text-sm font-semibold">
-              {step.title ||
-                t("practice.explain.stepTitle", { current: currentStep + 1 })}
-            </p>
-            <p className="text-white/60 text-xs capitalize">
-              {step.type || t("practice.explain.defaultType")}
-            </p>
-          </div>
-          {step.board_notes?.length ? (
-            <ul className="list-disc space-y-1 rounded-lg border border-white/10 bg-transparent px-5 py-2 text-white/60">
-              {step.board_notes.map((note, idx) => (
-                <li key={idx}>{note}</li>
-              ))}
-            </ul>
-          ) : null}
-          <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white">
-            {subtitle || narrationFor(step)}
-          </div>
-          <p className="text-white/40 text-[11px]">
-            {t("practice.explain.duration", {
-              seconds: Math.round((step.duration_ms ?? 0) / 100) / 10,
-              delay: Math.round((step.delay_ms ?? 0) / 100) / 10,
-            })}
-          </p>
-        </div>
-      )}
-      {!steps.length && (
-        <p className="text-white/60 text-sm">{t("practice.explain.empty")}</p>
-      )}
-    </div>
-  );
-}
-/* eslint-enable react-hooks/set-state-in-effect */
 

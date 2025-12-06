@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { User } from "@/types/auth";
+import { AuthResponse, RegisterResponse, User } from "@/types/auth";
 import { clearToken, saveToken } from "@/lib/auth-storage";
 import * as AuthService from "@/services/auth";
 import { extractErrorMessage } from "@/lib/errors";
@@ -17,9 +17,12 @@ type AuthState = {
     email: string,
     username: string,
     password: string,
+    code: string,
     language?: "en" | "zh"
   ) => Promise<void>;
   loadProfile: () => Promise<void>;
+  updateUser: (user: User) => void;
+  completeLogin: (payload: AuthResponse) => void;
   logout: () => void;
 };
 
@@ -33,9 +36,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ loading: true, error: null });
     try {
       const data = await AuthService.login({ identifier, password });
-      saveToken(data.access_token);
-      applyLocalePreference(data.user);
-      set({ token: data.access_token, user: data.user, loading: false });
+      applyAuthResponse(data, set);
     } catch (error: unknown) {
       const message = extractErrorMessage(error, "登录失败");
       set({
@@ -46,18 +47,18 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  async register(email, username, password, language = "en") {
+  async register(email, username, password, code, language = "en") {
     set({ loading: true, error: null });
     try {
       const data = await AuthService.register({
         email,
         username,
         password,
+        code,
         languagePreference: language,
       });
-      saveToken(data.access_token);
-      applyLocalePreference(data.user);
-      set({ token: data.access_token, user: data.user, loading: false });
+      applyAuthResponse(data, set);
+      set({ loading: false });
     } catch (error: unknown) {
       const message = extractErrorMessage(error, "注册失败");
       set({
@@ -77,6 +78,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch {
       set({ user: null, token: null, loading: false });
     }
+  },
+
+  updateUser(user) {
+    applyLocalePreference(user);
+    set({ user });
+  },
+
+  completeLogin(payload) {
+    applyAuthResponse(payload, set);
   },
 
   logout() {
@@ -99,5 +109,11 @@ function applyLocalePreference(user?: User | null) {
   } else {
     persistLocale("en");
   }
+}
+
+function applyAuthResponse(response: AuthResponse, set: (partial: Partial<AuthState>) => void) {
+  saveToken(response.access_token);
+  applyLocalePreference(response.user);
+  set({ token: response.access_token, user: response.user, loading: false, error: null });
 }
 

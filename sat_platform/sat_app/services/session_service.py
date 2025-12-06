@@ -4,15 +4,40 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from time import sleep
-from typing import List, Optional
+from typing import List, Optional, Dict, Iterable
 
 from sqlalchemy.exc import OperationalError
-from flask import url_for
+from flask import current_app, url_for
 from sqlalchemy.orm.attributes import flag_modified
 
 from ..extensions import db
 from ..models import Question, StudySession, UserQuestionLog
 from . import adaptive_engine, spaced_repetition, analytics_service
+from .difficulty_service import update_question_difficulty_stats
+
+
+def _round_robin_by_difficulty(candidates: Iterable[Question], limit: int) -> List[Question]:
+    """Ensure we don't return only 'easy' questions when variety exists."""
+    buckets: Dict[int, List[Question]] = {}
+    for question in candidates:
+        level = question.difficulty_level or 2
+        buckets.setdefault(level, []).append(question)
+    order = [3, 2, 4, 1, 5]
+    picked: List[Question] = []
+    while len(picked) < limit and any(buckets.values()):
+        for level in order:
+            bucket = buckets.get(level)
+            if bucket:
+                picked.append(bucket.pop())
+                if len(picked) >= limit:
+                    break
+        else:
+            break
+    if len(picked) < limit:
+        for bucket in buckets.values():
+            while bucket and len(picked) < limit:
+                picked.append(bucket.pop())
+    return picked[:limit]
 
 
 def select_questions(
@@ -38,8 +63,9 @@ def select_questions(
         fallback = query.order_by(db.func.random()).all()
         prioritized = [q for q in fallback if focus_skill in (q.skill_tags or [])]
         prioritized.extend([q for q in fallback if focus_skill not in (q.skill_tags or [])])
-        return prioritized[:num_questions]
-    return query.order_by(db.func.random()).limit(num_questions).all()
+        return _round_robin_by_difficulty(prioritized, num_questions)
+    fallback = query.order_by(db.func.random()).all()
+    return _round_robin_by_difficulty(fallback, num_questions)
 
 
 def create_session(
@@ -90,6 +116,16 @@ def log_answer(session: StudySession, question: Question, payload: dict, user_id
     adaptive_engine.update_mastery_from_log(log, question)
     spaced_repetition.schedule_from_log(log)
     analytics_service.record_question_result(user_id, question, is_correct)
+    try:
+        update_question_difficulty_stats(question, log)
+    except Exception:  # pragma: no cover - defensive
+        current_app = None
+        try:
+            from flask import current_app  # lazy import to avoid circularity
+
+            current_app.logger.warning("Failed to update difficulty stats", exc_info=True)
+        except Exception:
+            pass
     return log
 
 
@@ -124,12 +160,11 @@ def abort_session(session: StudySession) -> StudySession:
     return session
 
 
-def get_active_session(user_id: int) -> Optional[StudySession]:
-    return (
-        StudySession.query.filter_by(user_id=user_id, ended_at=None)
-        .order_by(StudySession.started_at.desc())
-        .first()
-    )
+def get_active_session(user_id: int, *, include_plan: bool = True) -> Optional[StudySession]:
+    query = StudySession.query.filter_by(user_id=user_id, ended_at=None)
+    if not include_plan:
+        query = query.filter(StudySession.session_type != "plan")
+    return query.order_by(StudySession.started_at.desc()).first()
 
 
 def get_last_session_summary(user_id: int) -> Optional[dict]:
@@ -192,6 +227,11 @@ def _serialize_question(question: Question) -> dict:
     if figures:
         payload["figures"] = figures
     return payload
+
+
+def serialize_question(question: Question) -> dict:
+    """Public helper to serialize questions for client consumption."""
+    return _serialize_question(question)
 
 
 def refresh_assigned_questions(session: StudySession | None, *, commit: bool = True):

@@ -13,7 +13,7 @@ import pytest
 
 from sat_app import create_app
 from sat_app.extensions import db
-from sat_app.models import User
+from sat_app.models import User, EmailVerificationTicket
 from sat_app.utils.security import hash_password
 
 
@@ -33,10 +33,19 @@ def client(app_with_db):
 
 
 @pytest.fixture()
-def student_token(client):
+def student_token(app_with_db, client):
+    email = "student@example.com"
+    resp = client.post(
+        "/api/auth/register/request-code",
+        json={"email": email, "language_preference": "en"},
+    )
+    assert resp.status_code == 200
+    with app_with_db.app_context():
+        ticket = EmailVerificationTicket.query.filter_by(email=email).first()
+        code = ticket.code
     register = client.post(
         "/api/auth/register",
-        json={"email": "student@example.com", "password": "StrongPass123!"},
+        json={"email": email, "password": "StrongPass123!", "code": code},
     )
     return register.get_json()["access_token"]
 
@@ -49,6 +58,7 @@ def admin_token(app_with_db, client):
             username="admin1",
             password_hash=hash_password("AdminPass123!"),
             role="admin",
+            is_email_verified=True,
         )
         db.session.add(admin)
         db.session.commit()

@@ -62,7 +62,7 @@ def ping():
 @jwt_required()
 def start_session():
     payload = start_schema.load(request.get_json() or {})
-    existing = session_service.get_active_session(current_user.id)
+    existing = session_service.get_active_session(current_user.id, include_plan=False)
     if existing:
         session_service.refresh_assigned_questions(existing)
         return (
@@ -221,7 +221,7 @@ def abort_session():
 @learning_bp.get("/session/active")
 @jwt_required()
 def active_session():
-    session = session_service.get_active_session(current_user.id)
+    session = session_service.get_active_session(current_user.id, include_plan=False)
     if not session:
         return jsonify({"session": None})
     session_service.refresh_assigned_questions(session)

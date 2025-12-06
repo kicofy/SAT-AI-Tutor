@@ -43,6 +43,36 @@ def test_student_can_start_session(client, seeded_question, student_token):
     assert len(data["questions_assigned"]) == 1
 
 
+def test_plan_session_does_not_block_practice_flow(
+    app_with_db, client, seeded_question, student_token
+):
+    from sat_app.models import User, Question
+    from sat_app.services import session_service
+
+    with app_with_db.app_context():
+        user = User.query.filter_by(email="student@example.com").first()
+        assert user is not None
+        question = db.session.get(Question, seeded_question)
+        session_service.create_session(
+            user_id=user.id,
+            questions=[question],
+            plan_block_id="block-abc",
+            session_type="plan",
+        )
+
+    active = client.get(
+        "/api/learning/session/active",
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    assert active is None
+
+    resp = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1},
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert resp.status_code == 201
+
 def test_student_can_answer_question(client, seeded_question, student_token, monkeypatch):
     calls = {"count": 0}
 
@@ -100,6 +130,10 @@ def test_student_can_answer_question(client, seeded_question, student_token, mon
     ).get_json()["explanation"]
     assert explanation_again["protocol_version"] == "1.0"
     assert calls["count"] == 1
+    with client.application.app_context():
+        question = db.session.get(Question, question_entry["question_id"])
+        stats = question.metadata_json.get("difficulty_stats")
+        assert stats["total_attempts"] == 1
 
 
 def test_mastery_endpoint_returns_snapshot(client, seeded_question, student_token, monkeypatch):
@@ -396,6 +430,72 @@ def test_plan_endpoint_requires_diagnostic(client, student_token):
     diagnostic = payload.get("diagnostic")
     assert diagnostic
     assert diagnostic.get("requires_diagnostic") is True
+
+
+def test_analytics_efficiency_and_mistakes(app_with_db, client, student_token):
+    from sat_app.models import Question
+
+    with app_with_db.app_context():
+        math_question = Question(
+            section="Math",
+            sub_section="Algebra",
+            stem_text="Solve x+2=4",
+            choices={"A": "1", "B": "2"},
+            correct_answer={"value": "B"},
+            skill_tags=["M_Algebra"],
+            difficulty_level=3,
+        )
+        db.session.add(math_question)
+        db.session.commit()
+
+    # Correct answer to generate timing data
+    start = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1, "section": "Math"},
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    entry = start["questions_assigned"][0]
+    client.post(
+        "/api/learning/session/answer",
+        json={
+            "session_id": start["id"],
+            "question_id": entry["question_id"],
+            "user_answer": {"value": "B"},
+            "time_spent_sec": 90,
+        },
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+
+    # Incorrect answer to populate mistake queue
+    second = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1, "section": "Math"},
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    second_entry = second["questions_assigned"][0]
+    client.post(
+        "/api/learning/session/answer",
+        json={
+            "session_id": second["id"],
+            "question_id": second_entry["question_id"],
+            "user_answer": {"value": "A"},
+            "time_spent_sec": 40,
+        },
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+
+    eff = client.get(
+        "/api/analytics/efficiency",
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()
+    assert eff["sample_size"] >= 1
+    assert eff["sections"]
+
+    mistakes = client.get(
+        "/api/analytics/mistakes",
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()
+    assert mistakes["total_mistakes"] >= 1
 
 
 def test_diagnostic_start_and_status(client, seeded_question, student_token):

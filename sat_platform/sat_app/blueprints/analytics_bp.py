@@ -21,3 +21,17 @@ def progress():
     data = analytics_service.get_progress(current_user.id)
     return jsonify({"progress": data})
 
+
+@analytics_bp.get("/efficiency")
+@jwt_required()
+def efficiency():
+    summary = analytics_service.get_efficiency_summary(current_user.id)
+    return jsonify(summary)
+
+
+@analytics_bp.get("/mistakes")
+@jwt_required()
+def mistakes():
+    payload = analytics_service.get_mistake_queue(current_user.id)
+    return jsonify(payload)
+

@@ -7,7 +7,7 @@ from .question import (
     QuestionExplanationCache,
     QuestionFigure,
 )
-from .user import User, UserProfile
+from .user import User, UserProfile, EmailVerificationTicket
 from .learning import (
     StudySession,
     UserQuestionLog,
@@ -26,6 +26,7 @@ from .imports import QuestionImportJob, QuestionDraft
 __all__ = [
     "User",
     "UserProfile",
+    "EmailVerificationTicket",
     "Passage",
     "Question",
     "QuestionSet",

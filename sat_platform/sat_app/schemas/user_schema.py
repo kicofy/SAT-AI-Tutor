@@ -20,6 +20,7 @@ class RegisterSchema(Schema):
     email = fields.Email(required=True)
     password = fields.String(required=True, validate=validate.Length(min=8))
     username = fields.String(validate=validate.Length(min=3, max=64))
+    code = fields.String(required=True, validate=validate.Length(equal=6))
     profile = fields.Nested(UserProfileSchema, load_default=dict)
 
     class Meta:
@@ -49,6 +50,31 @@ class UserSchema(Schema):
     username = fields.String(dump_only=True)
     role = fields.String(dump_only=True)
     is_root = fields.Boolean(dump_only=True)
+    is_email_verified = fields.Boolean(dump_only=True)
     created_at = fields.DateTime(dump_only=True)
     profile = fields.Nested(PublicUserProfileSchema, dump_only=True)
+
+
+class UpdateProfileSchema(Schema):
+    email = fields.Email()
+    language_preference = fields.String(validate=validate.OneOf(LANG_CHOICES))
+
+
+class PasswordChangeSchema(Schema):
+    current_password = fields.String(required=True)
+    new_password = fields.String(required=True, validate=validate.Length(min=8))
+
+
+class EmailVerifySchema(Schema):
+    email = fields.Email(required=True)
+    code = fields.String(required=True, validate=validate.Length(equal=6))
+
+
+class EmailResendSchema(Schema):
+    email = fields.Email(required=True)
+
+
+class VerificationRequestSchema(Schema):
+    email = fields.Email(required=True)
+    language_preference = fields.String(validate=validate.OneOf(("en", "zh")), load_default="en")
 

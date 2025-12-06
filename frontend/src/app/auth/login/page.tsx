@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { AxiosError } from "axios";
 import { useAuth } from "@/hooks/use-auth";
 import { extractErrorMessage } from "@/lib/errors";
 import { useI18n } from "@/hooks/use-i18n";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { login, loading, error } = useAuth();
   const { t } = useI18n();
   const [identifier, setIdentifier] = useState("");
@@ -20,8 +22,17 @@ export default function LoginPage() {
     setSubmitError(null);
     try {
       await login(identifier, password);
-      router.push("/");
+      const redirect = searchParams?.get("redirect");
+      const target =
+        redirect && redirect.startsWith("/") && !redirect.startsWith("/auth/")
+          ? redirect
+          : "/";
+      router.push(target);
     } catch (err: unknown) {
+      if (err instanceof AxiosError && err.response?.data?.error === "email_not_verified") {
+        setSubmitError(t("auth.login.emailNotVerified"));
+        return;
+      }
       setSubmitError(extractErrorMessage(err, "登录失败"));
     }
   }

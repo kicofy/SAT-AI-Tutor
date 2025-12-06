@@ -24,6 +24,10 @@
   @apply flex flex-col gap-2;
 }
 
+.footerNav {
+  @apply mt-auto border-t border-white/5 pt-4;
+}
+
 .navItem {
   position: relative;
   @apply flex items-center gap-3 rounded-xl px-3 py-2 text-sm text-white/70 transition-all;
