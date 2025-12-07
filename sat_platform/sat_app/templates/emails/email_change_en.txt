@@ -1,0 +1,12 @@
+Confirm your new SAT AI Tutor email
+
+Hi {{ name }},
+
+Use this verification code to confirm you want to use {{ new_email }} for SAT AI Tutor. The code expires in {{ expires_minutes }} minutes.
+
+Code: {{ code }}
+
+If you didn’t request this change, ignore this email and your login email will stay the same.
+
+© {{ year }} SAT AI Tutor
+

@@ -29,9 +29,20 @@ export default function LoginPage() {
           : "/";
       router.push(target);
     } catch (err: unknown) {
-      if (err instanceof AxiosError && err.response?.data?.error === "email_not_verified") {
-        setSubmitError(t("auth.login.emailNotVerified"));
-        return;
+      if (err instanceof AxiosError) {
+        if (err.response?.data?.error === "email_not_verified") {
+          setSubmitError(t("auth.login.emailNotVerified"));
+          return;
+        }
+        if (err.response?.data?.error === "account_disabled") {
+          const reason = err.response.data?.reason;
+          setSubmitError(
+            reason
+              ? t("auth.login.accountDisabledReason", { reason })
+              : t("auth.login.accountDisabled")
+          );
+          return;
+        }
       }
       setSubmitError(extractErrorMessage(err, "登录失败"));
     }
@@ -69,6 +80,12 @@ export default function LoginPage() {
           {loading ? t("auth.login.loading") : t("auth.login.submit")}
         </button>
       </form>
+
+      <div className="flex justify-end">
+        <Link className="auth-link text-sm" href="/auth/forgot-password">
+          {t("auth.login.forgot")}
+        </Link>
+      </div>
 
       <p className="auth-footer">
         {t("auth.login.switch")}{" "}

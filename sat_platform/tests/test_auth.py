@@ -147,19 +147,19 @@ def test_non_root_admin_cannot_create_admin(client):
     assert resp.status_code == 403
 
 
-def test_update_profile_changes_email_and_language(client):
+def test_update_profile_changes_language(client):
     payload = {"email": "update@example.com", "password": "StrongPass123!", "code": _request_registration_code(client, "update@example.com")}
     register = client.post("/api/auth/register", json=payload)
     token = register.get_json()["access_token"]
     resp = client.patch(
         "/api/auth/profile",
-        json={"email": "updated@example.com", "language_preference": "zh"},
+        json={"language_preference": "zh"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200
-    payload = resp.get_json()["user"]
-    assert payload["email"] == "updated@example.com"
-    assert payload["profile"]["language_preference"] == "zh"
+    data = resp.get_json()["user"]
+    assert data["email"] == "update@example.com"
+    assert data["profile"]["language_preference"] == "zh"
 
 
 def test_change_password_requires_current_password(client):
@@ -202,6 +202,109 @@ def test_request_code_enforces_cooldown(client):
     assert cooldown.get_json()["message"] == "verification_code_recent"
 
 
+def test_email_change_flow_updates_user_email(client):
+    payload = {"email": "change@example.com", "password": "StrongPass123!", "code": _request_registration_code(client, "change@example.com")}
+    register = client.post("/api/auth/register", json=payload)
+    token = register.get_json()["access_token"]
+
+    new_email = "updated@example.com"
+    code = _request_email_change_code(client, token, new_email)
+    resp = client.post(
+        "/api/auth/email/change/confirm",
+        json={"new_email": new_email, "code": code},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    user_payload = resp.get_json()["user"]
+    assert user_payload["email"] == new_email
+
+    # old email should no longer allow login
+    old_login = client.post(
+        "/api/auth/login",
+        json={"identifier": "change@example.com", "password": "StrongPass123!"},
+    )
+    assert old_login.status_code == 401
+
+    new_login = client.post(
+        "/api/auth/login",
+        json={"identifier": new_email, "password": "StrongPass123!"},
+    )
+    assert new_login.status_code == 200
+
+
+def test_email_change_request_rejects_existing_email(client):
+    first = {"email": "taken@example.com", "password": "StrongPass123!", "code": _request_registration_code(client, "taken@example.com")}
+    client.post("/api/auth/register", json=first)
+    second = {"email": "second@example.com", "password": "StrongPass123!", "code": _request_registration_code(client, "second@example.com")}
+    register = client.post("/api/auth/register", json=second)
+    token = register.get_json()["access_token"]
+    resp = client.post(
+        "/api/auth/email/change/request",
+        json={"new_email": "taken@example.com"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["message"] == "email_exists"
+
+
+def test_email_change_confirm_rejects_wrong_code(client):
+    payload = {"email": "wrongcode@example.com", "password": "StrongPass123!", "code": _request_registration_code(client, "wrongcode@example.com")}
+    register = client.post("/api/auth/register", json=payload)
+    token = register.get_json()["access_token"]
+    new_email = "another@example.com"
+    _request_email_change_code(client, token, new_email)
+    resp = client.post(
+        "/api/auth/email/change/confirm",
+        json={"new_email": new_email, "code": "999999"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["message"] == "verification_code_invalid"
+    # ensure email did not change
+    me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    assert me.get_json()["user"]["email"] == "wrongcode@example.com"
+
+
+def test_password_reset_request_and_confirm(client):
+    email = "resetuser@example.com"
+    payload = {"email": email, "password": "StrongPass123!", "code": _request_registration_code(client, email)}
+    client.post("/api/auth/register", json=payload)
+
+    resp = client.post("/api/auth/password/reset/request", json={"identifier": email})
+    assert resp.status_code == 200
+
+    with client.application.app_context():
+        user = User.query.filter_by(email=email).first()
+        token = user.password_reset_token
+        assert token
+
+    confirm = client.post(
+        "/api/auth/password/reset/confirm",
+        json={"token": token, "new_password": "NewPass123!"},
+    )
+    assert confirm.status_code == 200
+
+    login = client.post(
+        "/api/auth/login",
+        json={"identifier": email, "password": "NewPass123!"},
+    )
+    assert login.status_code == 200
+
+
+def test_password_reset_request_enforces_cooldown(client):
+    email = "cooldown@example.com"
+    payload = {"email": email, "password": "StrongPass123!", "code": _request_registration_code(client, email)}
+    client.post("/api/auth/register", json=payload)
+
+    first = client.post("/api/auth/password/reset/request", json={"identifier": email})
+    assert first.status_code == 200
+
+    second = client.post("/api/auth/password/reset/request", json={"identifier": email})
+    assert second.status_code == 400
+    assert second.get_json()["message"] == "reset_recent"
+
+
 def _login_root_admin(client):
     resp = client.post(
         "/api/auth/login",
@@ -218,11 +321,20 @@ def _request_registration_code(client, email: str) -> str:
     )
     assert resp.status_code == 200
     with client.application.app_context():
-        ticket = (
-            EmailVerificationTicket.query.filter_by(email=email.lower())
-            .order_by(EmailVerificationTicket.created_at.desc())
-            .first()
-        )
+        ticket = EmailVerificationTicket.query.filter_by(email=email.lower(), purpose="signup").first()
+        assert ticket is not None
+        return ticket.code
+
+
+def _request_email_change_code(client, token: str, email: str) -> str:
+    resp = client.post(
+        "/api/auth/email/change/request",
+        json={"new_email": email},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    with client.application.app_context():
+        ticket = EmailVerificationTicket.query.filter_by(email=email.lower(), purpose="email_change").first()
         assert ticket is not None
         return ticket.code
 

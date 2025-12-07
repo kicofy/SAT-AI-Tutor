@@ -18,7 +18,7 @@ from flask import Blueprint, Response, abort, current_app, jsonify, request, sen
 from flask_jwt_extended import current_user, jwt_required
 from marshmallow import ValidationError
 from werkzeug.utils import secure_filename
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, case
 
 from ..extensions import db
 from ..models import (
@@ -27,6 +27,8 @@ from ..models import (
     QuestionImportJob,
     QuestionExplanationCache,
     QuestionSource,
+    StudyPlanTask,
+    DailyMetric,
     UserQuestionLog,
     User,
     Question,
@@ -36,6 +38,7 @@ from ..services import question_service, openai_log, mail_service
 from ..services.skill_taxonomy import canonicalize_tags
 from ..services.job_events import job_event_broker
 from ..tasks.question_tasks import process_job
+from ..utils import hash_password
 
 admin_bp = Blueprint("admin_bp", __name__)
 
@@ -62,7 +65,96 @@ def _serialize_user(user: User) -> dict:
 def _serialize_question(question: Question) -> dict:
     data = question_schema.dump(question)
     data["source"] = _serialize_source(question.source)
+    figures = []
+    figure_query = getattr(question, "figures", None)
+    if figure_query is not None:
+        try:
+            figure_list = figure_query.all()
+        except Exception:  # pragma: no cover
+            figure_list = []
+        figures = [_serialize_figure(fig) for fig in figure_list if fig.image_path]
+    if figures:
+        data["figures"] = figures
     return data
+
+
+def _serialize_plan_task(task: StudyPlanTask) -> dict:
+    if not task:
+        return {}
+    return {
+        "block_id": task.block_id,
+        "status": task.status,
+        "section": task.section,
+        "focus_skill": task.focus_skill,
+        "questions_target": task.questions_target,
+        "plan_date": task.plan_date.isoformat() if task.plan_date else None,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+    }
+
+
+def _learning_snapshot(user_id: int) -> dict | None:
+    stats = (
+        db.session.query(
+            func.count(UserQuestionLog.id),
+            func.sum(case((UserQuestionLog.is_correct == True, 1), else_=0)),  # noqa: E712
+            func.avg(UserQuestionLog.time_spent_sec),
+            func.max(UserQuestionLog.answered_at),
+        )
+        .filter(UserQuestionLog.user_id == user_id)
+        .one()
+    )
+    total_questions = int(stats[0] or 0)
+    correct_questions = int(stats[1] or 0)
+    avg_time = float(stats[2]) if stats[2] is not None else None
+    last_active = stats[3].isoformat() if stats[3] else None
+    accuracy = round((correct_questions / total_questions) * 100, 1) if total_questions else None
+
+    plan_stats = (
+        db.session.query(
+            func.count(StudyPlanTask.id),
+            func.sum(case((StudyPlanTask.status == "completed", 1), else_=0)),
+        )
+        .filter(StudyPlanTask.user_id == user_id)
+        .one()
+    )
+    plan_total = int(plan_stats[0] or 0)
+    plan_completed = int(plan_stats[1] or 0)
+
+    active_task = (
+        StudyPlanTask.query.filter(
+            StudyPlanTask.user_id == user_id,
+            StudyPlanTask.status.in_(("pending", "in_progress")),
+        )
+        .order_by(StudyPlanTask.updated_at.desc())
+        .first()
+    )
+
+    latest_metric = (
+        DailyMetric.query.filter_by(user_id=user_id)
+        .order_by(DailyMetric.day.desc())
+        .first()
+    )
+
+    snapshot = {
+        "last_active_at": last_active,
+        "total_questions": total_questions,
+        "accuracy_percent": accuracy,
+        "avg_time_sec": avg_time,
+        "plan_tasks_completed": plan_completed,
+        "plan_tasks_total": plan_total,
+        "active_plan": _serialize_plan_task(active_task) if active_task else None,
+        "predicted_score_rw": latest_metric.predicted_score_rw if latest_metric else None,
+        "predicted_score_math": latest_metric.predicted_score_math if latest_metric else None,
+        "avg_difficulty": latest_metric.avg_difficulty if latest_metric else None,
+    }
+    if (
+        total_questions == 0
+        and plan_total == 0
+        and not snapshot["active_plan"]
+        and snapshot["predicted_score_rw"] is None
+    ):
+        return None
+    return snapshot
 
 
 def _pagination_payload(pagination) -> dict:
@@ -96,6 +188,7 @@ def _serialize_source(source: QuestionSource | None) -> dict | None:
         "filename": source.filename,
         "original_name": source.original_name,
         "total_pages": source.total_pages,
+        "created_at": source.created_at.isoformat() if source.created_at else None,
     }
 
 
@@ -243,6 +336,23 @@ def _get_draft_or_404(draft_id: int) -> QuestionDraft:
     return draft
 
 
+def _resolve_question_page_number(question: Question, requested_page: str | None) -> int | None:
+    if requested_page and requested_page.isdigit():
+        return max(1, int(requested_page))
+    if getattr(question, "source_page", None):
+        try:
+            return max(1, int(question.source_page))
+        except (TypeError, ValueError):
+            pass
+    candidate = getattr(question, "page", None)
+    if candidate:
+        try:
+            return max(1, int(str(candidate)))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _attach_figure_to_question(figure: QuestionFigure, question_id: int) -> None:
     figure.question_id = question_id
     figure.draft_id = None
@@ -339,7 +449,8 @@ def get_user_admin(user_id: int):
     user = db.session.get(User, user_id)
     if not user:
         abort(404)
-    return jsonify({"user": _serialize_user(user)})
+    snapshot = _learning_snapshot(user.id)
+    return jsonify({"user": _serialize_user(user), "snapshot": snapshot})
 
 
 @admin_bp.patch("/users/<int:user_id>")
@@ -378,6 +489,29 @@ def update_user_admin(user_id: int):
         else:
             user.profile.language_preference = language
         updated = True
+    is_active_payload = payload.get("is_active")
+    locked_reason_supplied = "locked_reason" in payload
+    locked_reason_value = payload.get("locked_reason")
+
+    if is_active_payload is not None:
+        desired_active = bool(is_active_payload)
+        if desired_active != user.is_active:
+            user.is_active = desired_active
+            if desired_active:
+                user.locked_at = None
+                user.locked_reason = (
+                    locked_reason_value or None if locked_reason_supplied else None
+                )
+            else:
+                user.locked_at = datetime.now(timezone.utc)
+                if locked_reason_supplied:
+                    user.locked_reason = locked_reason_value or None
+            updated = True
+
+    if locked_reason_supplied and not user.is_active:
+        user.locked_reason = locked_reason_value or None
+        updated = True
+
     if payload.get("reset_password"):
         new_pw = payload["reset_password"]
         user.password_hash = hash_password(new_pw)
@@ -428,7 +562,104 @@ def get_question(question_id: int):
     if not require_admin():
         return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
     question = question_service.get_question(question_id)
-    return jsonify({"question": question_schema.dump(question)})
+    return jsonify({"question": _serialize_question(question)})
+
+
+@admin_bp.get("/questions/<int:question_id>/figure-source")
+@jwt_required()
+def get_question_figure_source(question_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    question = question_service.get_question(question_id)
+    source = question.source
+    if not source or not source.stored_path:
+        return jsonify({"message": "Question is not linked to a PDF source."}), HTTPStatus.BAD_REQUEST
+    page = _resolve_question_page_number(question, request.args.get("page"))
+    if not page:
+        return jsonify({"message": "No page number available for this question."}), HTTPStatus.BAD_REQUEST
+    try:
+        image, width, height = _render_pdf_page_base64(source.stored_path, page)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"message": f"Unable to render page {page}: {exc}"}), HTTPStatus.BAD_REQUEST
+    return jsonify({"page": page, "image": image, "width": width, "height": height})
+
+
+@admin_bp.get("/questions/<int:question_id>/figures")
+@jwt_required()
+def list_question_figures(question_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    question = question_service.get_question(question_id)
+    figure_query = getattr(question, "figures", None)
+    figures = []
+    if figure_query is not None:
+        try:
+            figures = figure_query.all()
+        except Exception:  # pragma: no cover
+            figures = []
+    return jsonify({"figures": [_serialize_figure(fig) for fig in figures]})
+
+
+@admin_bp.post("/questions/<int:question_id>/figure")
+@jwt_required()
+def upload_question_figure(question_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    question = question_service.get_question(question_id)
+    if not question.source_id:
+        return jsonify({"message": "Question must be linked to a PDF source first."}), HTTPStatus.BAD_REQUEST
+    file = request.files.get("image")
+    if file is None:
+        return jsonify({"message": "Image file is required."}), HTTPStatus.BAD_REQUEST
+    bbox_raw = request.form.get("bbox")
+    description = request.form.get("description") or None
+    bbox = None
+    if bbox_raw:
+        try:
+            bbox = json.loads(bbox_raw)
+        except json.JSONDecodeError:
+            return jsonify({"message": "Invalid bbox payload."}), HTTPStatus.BAD_REQUEST
+    target_dir = _figure_root() / f"question_{question.id}"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = secure_filename(file.filename or f"question-{question.id}-{uuid4().hex}.png")
+    path = target_dir / filename
+    file.save(path)
+    existing_query = getattr(question, "figures", None)
+    if existing_query is not None:
+        for existing in existing_query.all():
+            _delete_figure_file(existing)
+            db.session.delete(existing)
+    figure = QuestionFigure(question_id=question.id, image_path=str(path), description=description, bbox=bbox)
+    question.has_figure = True
+    db.session.add(figure)
+    db.session.add(question)
+    db.session.commit()
+    return jsonify({"figure": _serialize_figure(figure)}), HTTPStatus.CREATED
+
+
+@admin_bp.delete("/questions/<int:question_id>/figures/<int:figure_id>")
+@jwt_required()
+def delete_question_figure(question_id: int, figure_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    question = question_service.get_question(question_id)
+    figure = QuestionFigure.query.filter_by(id=figure_id, question_id=question.id).first()
+    if not figure:
+        abort(404)
+    _delete_figure_file(figure)
+    db.session.delete(figure)
+    remaining = 0
+    figure_query = getattr(question, "figures", None)
+    if figure_query is not None:
+        try:
+            remaining = figure_query.count() - 1  # current deletion not yet committed
+        except Exception:
+            remaining = 0
+    if remaining <= 0:
+        question.has_figure = False
+        db.session.add(question)
+    db.session.commit()
+    return "", HTTPStatus.NO_CONTENT
 
 
 @admin_bp.put("/questions/<int:question_id>")
@@ -583,9 +814,29 @@ def ingest_pdf_questions():
     if not file.filename:
         return jsonify({"message": "Filename missing"}), HTTPStatus.BAD_REQUEST
     filename = secure_filename(file.filename)
+    force_raw = (request.form.get("force") or request.args.get("force") or "").strip().lower()
+    force_replace = force_raw in {"1", "true", "yes", "force", "on"}
+    existing_source = (
+        QuestionSource.query.filter(func.lower(QuestionSource.filename) == filename.lower())
+        .order_by(QuestionSource.created_at.desc())
+        .first()
+    )
+    if existing_source and not force_replace:
+        return (
+            jsonify(
+                {
+                    "error": "duplicate_source",
+                    "message": "A PDF with this filename already exists in Collections.",
+                    "source": _serialize_source(existing_source),
+                }
+            ),
+            HTTPStatus.CONFLICT,
+        )
     upload_dir = Path(current_app.instance_path) / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     path = upload_dir / filename
+    if path.exists():
+        path = upload_dir / f"{uuid4().hex}-{filename}"
     file.save(path)
     source = _create_question_source(
         filename=filename,
@@ -637,23 +888,15 @@ def list_imports():
         .limit(20)
         .all()
     )
+    drafts = [
+        draft.serialize()
+        for job in jobs
+        for draft in job.drafts
+    ]
     return jsonify(
         {
             "jobs": [_serialize_job(job) for job in jobs],
-            "drafts": [
-                {
-                    "id": draft.id,
-                    "job_id": draft.job_id,
-                    "source_id": draft.source_id,
-                    "source": _serialize_source(draft.source),
-                    "is_verified": draft.is_verified,
-                    "payload": draft.payload,
-                    "figure_count": draft.figures.count(),
-                    "figures": [_serialize_figure(fig) for fig in draft.figures],
-                }
-                for job in jobs
-                for draft in job.drafts
-            ],
+            "drafts": drafts,
         }
     )
 
@@ -720,6 +963,12 @@ def upload_draft_figure(draft_id: int):
     figure = QuestionFigure(draft_id=draft.id, image_path=str(path), description=description, bbox=bbox)
     db.session.add(figure)
     db.session.commit()
+    job_event_broker.publish(
+        {
+            "type": "draft",
+            "payload": draft.serialize(),
+        }
+    )
     return jsonify({"figure": _serialize_figure(figure)}), HTTPStatus.CREATED
 
 
@@ -735,6 +984,12 @@ def delete_draft_figure(draft_id: int, figure_id: int):
     _delete_figure_file(figure)
     db.session.delete(figure)
     db.session.commit()
+    job_event_broker.publish(
+        {
+            "type": "draft",
+            "payload": draft.serialize(),
+        }
+    )
     return "", HTTPStatus.NO_CONTENT
 
 
@@ -802,16 +1057,14 @@ def import_events():
         return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
 
     def event_stream():
-        # send initial snapshot
         jobs = (
             QuestionImportJob.query.order_by(QuestionImportJob.created_at.desc())
             .limit(20)
             .all()
         )
-        snapshot = json.dumps(
-            {"type": "snapshot", "payload": [job.serialize() for job in jobs]}
-        )
-        yield f"data: {snapshot}\n\n"
+        yield f"data: {json.dumps({'type': 'snapshot', 'payload': [job.serialize() for job in jobs]})}\n\n"
+        drafts = [draft.serialize() for job in jobs for draft in job.drafts]
+        yield f"data: {json.dumps({'type': 'draft_snapshot', 'payload': drafts})}\n\n"
         for message in job_event_broker.listen():
             yield f"data: {message}\n\n"
 
@@ -830,6 +1083,7 @@ def delete_draft(draft_id: int):
         _delete_figure_file(figure)
     db.session.delete(draft)
     db.session.commit()
+    job_event_broker.publish({"type": "draft_removed", "payload": {"id": draft_id}})
     return "", HTTPStatus.NO_CONTENT
 
 
@@ -864,7 +1118,29 @@ def publish_draft(draft_id: int):
         _attach_figure_to_question(figure, question.id)
     db.session.delete(draft)
     db.session.commit()
+    job_event_broker.publish({"type": "draft_removed", "payload": {"id": draft_id}})
     return jsonify({"question": question_schema.dump(question)}), HTTPStatus.CREATED
+
+
+@admin_bp.patch("/questions/drafts/<int:draft_id>")
+@jwt_required()
+def update_draft(draft_id: int):
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    draft = db.session.get(QuestionDraft, draft_id)
+    if not draft:
+        abort(404)
+    payload = request.get_json() or {}
+    try:
+        normalized = question_create_schema.load(payload)
+    except ValidationError as err:
+        return jsonify({"errors": err.messages}), HTTPStatus.BAD_REQUEST
+    draft.payload = normalized
+    draft.updated_at = datetime.now(timezone.utc)
+    db.session.add(draft)
+    db.session.commit()
+    job_event_broker.publish({"type": "draft", "payload": draft.serialize()})
+    return jsonify({"draft": draft.serialize()})
 
 
 @admin_bp.delete("/questions/imports/<int:job_id>")
@@ -878,6 +1154,7 @@ def cancel_import(job_id: int):
     if job.status == "processing":
         job.status = "cancelled"
         job.status_message = "Cancelled by admin"
+    draft_ids = [draft.id for draft in job.drafts]
     for draft in job.drafts:
         for figure in draft.figures.all():
             _delete_figure_file(figure)
@@ -885,5 +1162,7 @@ def cancel_import(job_id: int):
     db.session.delete(job)
     db.session.commit()
     job_event_broker.publish({"type": "job_removed", "payload": {"id": job_id}})
+    for draft_id in draft_ids:
+        job_event_broker.publish({"type": "draft_removed", "payload": {"id": draft_id}})
     return "", HTTPStatus.NO_CONTENT
 

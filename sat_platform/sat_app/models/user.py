@@ -21,6 +21,9 @@ class User(db.Model):
     username = db.Column(db.String(64), unique=True, nullable=True, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(32), nullable=False, default="student")
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    locked_reason = db.Column(db.String(255))
+    locked_at = db.Column(db.DateTime(timezone=True))
     is_root = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     is_email_verified = db.Column(db.Boolean, nullable=False, default=False)
@@ -30,6 +33,9 @@ class User(db.Model):
     email_verification_sent_at = db.Column(db.DateTime(timezone=True))
     email_verification_sent_count = db.Column(db.Integer, nullable=False, default=0)
     email_verification_sent_window_start = db.Column(db.DateTime(timezone=True))
+    password_reset_token = db.Column(db.String(255))
+    password_reset_requested_at = db.Column(db.DateTime(timezone=True))
+    password_reset_expires_at = db.Column(db.DateTime(timezone=True))
 
     profile = db.relationship(
         "UserProfile",
@@ -74,6 +80,8 @@ class EmailVerificationTicket(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    purpose = db.Column(db.String(32), nullable=False, default="signup")
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     code = db.Column(db.String(12), nullable=False)
     language = db.Column(db.String(8), nullable=False, default="en")
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
@@ -83,5 +91,5 @@ class EmailVerificationTicket(db.Model):
     attempts = db.Column(db.Integer, default=0, nullable=False)
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
-        return f"<EmailVerificationTicket email={self.email}>"
+        return f"<EmailVerificationTicket email={self.email} purpose={self.purpose}>"
 

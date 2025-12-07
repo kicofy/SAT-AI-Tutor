@@ -18,11 +18,15 @@ from ..schemas import (
     RegisterSchema,
     UpdateProfileSchema,
     PasswordChangeSchema,
+    PasswordResetRequestSchema,
+    PasswordResetConfirmSchema,
     VerificationRequestSchema,
+    EmailChangeRequestSchema,
+    EmailChangeConfirmSchema,
     UserSchema,
 )
 from ..utils import generate_access_token, hash_password, verify_password
-from ..services import verification_service
+from ..services import verification_service, password_reset_service
 
 auth_bp = Blueprint("auth_bp", __name__)
 
@@ -33,6 +37,10 @@ user_schema = UserSchema()
 update_profile_schema = UpdateProfileSchema()
 password_change_schema = PasswordChangeSchema()
 verification_request_schema = VerificationRequestSchema()
+email_change_request_schema = EmailChangeRequestSchema()
+email_change_confirm_schema = EmailChangeConfirmSchema()
+password_reset_request_schema = PasswordResetRequestSchema()
+password_reset_confirm_schema = PasswordResetConfirmSchema()
 
 
 @auth_bp.errorhandler(ValidationError)
@@ -139,6 +147,17 @@ def login():
             HTTPStatus.FORBIDDEN,
         )
 
+    if not user.is_active:
+        return (
+            jsonify(
+                {
+                    "error": "account_disabled",
+                    "reason": user.locked_reason,
+                }
+            ),
+            HTTPStatus.FORBIDDEN,
+        )
+
     return jsonify(
         {"access_token": generate_access_token(user), "user": user_schema.dump(user)}
     )
@@ -164,14 +183,7 @@ def update_profile():
         return jsonify({"message": "No changes supplied"}), HTTPStatus.BAD_REQUEST
 
     updated = False
-    email = payload.get("email")
     language = payload.get("language_preference")
-
-    if email and email.lower() != current_user.email:
-        if User.query.filter_by(email=email.lower()).first():
-            return jsonify({"message": "Email already registered"}), HTTPStatus.CONFLICT
-        current_user.email = email.lower()
-        updated = True
 
     if language:
         if not current_user.profile:
@@ -196,6 +208,52 @@ def change_password():
     current_user.password_hash = hash_password(payload["new_password"])
     db.session.commit()
     return jsonify({"message": "Password updated"})
+
+
+@auth_bp.post("/password/reset/request")
+def password_reset_request():
+    payload = password_reset_request_schema.load(request.get_json() or {})
+    try:
+        password_reset_service.request_password_reset(payload["identifier"])
+    except BadRequest as exc:
+        return jsonify({"message": exc.description}), HTTPStatus.BAD_REQUEST
+    return jsonify({"message": "sent"})
+
+
+@auth_bp.post("/password/reset/confirm")
+def password_reset_confirm():
+    payload = password_reset_confirm_schema.load(request.get_json() or {})
+    try:
+        user = password_reset_service.confirm_password_reset(
+            payload["token"], payload["new_password"]
+        )
+    except BadRequest as exc:
+        return jsonify({"message": exc.description}), HTTPStatus.BAD_REQUEST
+    return jsonify({"user": user_schema.dump(user)})
+
+
+@auth_bp.post("/email/change/request")
+@jwt_required()
+def request_email_change():
+    payload = email_change_request_schema.load(request.get_json() or {})
+    try:
+        verification_service.request_email_change_code(current_user, payload["new_email"])
+    except BadRequest as exc:
+        return jsonify({"message": exc.description}), HTTPStatus.BAD_REQUEST
+    return jsonify({"message": "sent"})
+
+
+@auth_bp.post("/email/change/confirm")
+@jwt_required()
+def confirm_email_change():
+    payload = email_change_confirm_schema.load(request.get_json() or {})
+    try:
+        user = verification_service.confirm_email_change(
+            current_user, payload["new_email"], payload["code"]
+        )
+    except BadRequest as exc:
+        return jsonify({"message": exc.description}), HTTPStatus.BAD_REQUEST
+    return jsonify({"user": user_schema.dump(user)})
 
 
 @auth_bp.post("/admin/create")

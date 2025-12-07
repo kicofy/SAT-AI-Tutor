@@ -11,6 +11,9 @@ export type User = {
   username: string;
   role: "student" | "admin";
   is_email_verified?: boolean;
+  is_active?: boolean;
+  locked_reason?: string | null;
+  locked_at?: string | null;
   profile?: UserProfile | null;
 };
 

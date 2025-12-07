@@ -136,6 +136,14 @@ _SKILL_SYNONYMS: Dict[str, str] = {
     "vision": "RW_DataInterpretation",
     "rw_data": "RW_DataInterpretation",
     "m_statistics": "M_ProblemSolvingData",
+    "algebra": "M_Algebra",
+    "advanced math": "M_AdvancedMath",
+    "advanced-math": "M_AdvancedMath",
+    "problem solving": "M_ProblemSolvingData",
+    "problem-solving": "M_ProblemSolvingData",
+    "data analysis": "M_ProblemSolvingData",
+    "geometry": "M_Geometry",
+    "trigonometry": "M_Trigonometry",
 }
 
 

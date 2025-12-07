@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>确认邮箱修改</title>
+  </head>
+  <body style="margin:0;padding:0;background-color:#0B1424;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:#E6ECFF;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0B1424;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#0F1E34;border-radius:18px;padding:32px;">
+            <tr>
+              <td align="center" style="font-size:20px;font-weight:600;color:#ffffff;">SAT AI Tutor</td>
+            </tr>
+            <tr>
+              <td style="padding-top:18px;font-size:16px;line-height:1.6;color:#EEF2FF;">
+                {{ name }}，您好：<br /><br />
+                请使用下面的验证码确认将账户邮箱更新为 <strong>{{ new_email }}</strong>。验证码在
+                <strong>{{ expires_minutes }} 分钟</strong>内有效。
+              </td>
+            </tr>
+            <tr>
+              <td align="center" style="padding:28px 0;">
+                <div style="display:inline-block;background:#162848;border-radius:14px;padding:20px 36px;font-size:32px;letter-spacing:12px;font-weight:700;color:#FFFFFF;">
+                  {{ code }}
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="font-size:14px;line-height:1.5;color:#9DA9C7;">
+                请在 SAT AI Tutor 设置页面输入此 6 位验证码。如果这不是您本人的操作，请忽略该邮件，原邮箱将保持不变。
+              </td>
+            </tr>
+            <tr>
+              <td style="padding-top:26px;font-size:12px;color:#7F8AAD;">
+                SAT AI Tutor · 123 Learning Ave · Boston, MA<br />
+                Support: support@aisatmentor.com<br />
+                © {{ year }} SAT AI Tutor
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+

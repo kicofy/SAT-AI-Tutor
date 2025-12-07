@@ -118,7 +118,10 @@ def _resolve_sender(
     sender_override: tuple[str, str] | str | None,
     config: dict,
 ) -> tuple[str | None, str]:
-    default_email = config.get("MAIL_DEFAULT_SENDER") or config.get("MAIL_USERNAME")
+    # Many SMTP providers (Zoho, Gmail, etc.) require the envelope sender to match the
+    # authenticated username. Prefer MAIL_USERNAME when available to avoid 553 relay
+    # errors, but still fall back to MAIL_DEFAULT_SENDER for development convenience.
+    default_email = config.get("MAIL_USERNAME") or config.get("MAIL_DEFAULT_SENDER")
     default_name = config.get("MAIL_DEFAULT_NAME")
     if isinstance(sender_override, tuple):
         return sender_override[0], sender_override[1]

@@ -16,6 +16,10 @@ from ..services import ai_question_parser, pdf_ingest_service
 def _save_draft(job: QuestionImportJob, payload: dict) -> None:
     draft = QuestionDraft(job_id=job.id, payload=payload, source_id=job.source_id)
     db.session.add(draft)
+    db.session.flush()
+    job_event_broker.publish({"type": "draft", "payload": draft.serialize()})
+    db.session.flush()
+    job_event_broker.publish({"type": "draft", "payload": draft.serialize()})
 
 
 def process_job(job_id: int) -> QuestionImportJob:

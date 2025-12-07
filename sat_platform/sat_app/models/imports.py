@@ -96,3 +96,49 @@ class QuestionDraft(db.Model):
         lazy="dynamic",
     )
 
+    def serialize(self) -> dict:
+        source_payload = None
+        if self.source:
+            source_payload = {
+                "id": self.source.id,
+                "filename": self.source.filename,
+                "original_name": self.source.original_name,
+                "total_pages": self.source.total_pages,
+            }
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "source_id": self.source_id,
+            "payload": self.payload,
+            "is_verified": self.is_verified,
+            "figure_count": self.figures.count(),
+            "created_at": _isoformat(self.created_at),
+            "updated_at": _isoformat(self.updated_at),
+            "source": source_payload,
+        }
+
+    def serialize(self) -> dict:
+        payload = self.payload or {}
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "source_id": self.source_id,
+            "payload": payload,
+            "is_verified": self.is_verified,
+            "requires_figure": bool(payload.get("has_figure")),
+            "figure_count": self.figures.count(),
+            "created_at": _isoformat(self.created_at),
+            "updated_at": _isoformat(self.updated_at),
+            "source": self._serialize_source(),
+        }
+
+    def _serialize_source(self) -> dict | None:
+        if not self.source:
+            return None
+        return {
+            "id": self.source.id,
+            "filename": self.source.filename,
+            "original_name": self.source.original_name,
+            "total_pages": self.source.total_pages,
+        }
+

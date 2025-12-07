@@ -5,6 +5,9 @@ import { env } from "@/lib/env";
 import { QueryProvider } from "@/components/providers/query-provider";
 import { LocaleProvider } from "@/components/providers/locale-provider";
 import { CSSTransitionWrapper } from "@/components/ui/css-transition-wrapper";
+import { cookies } from "next/headers";
+import { LOCALE_COOKIE_KEY } from "@/i18n/locale-storage";
+import { Locale } from "@/i18n/messages";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,18 +25,22 @@ export const metadata: Metadata = {
   description: "SAT AI Tutor – Edu + AI + Gamification Dashboard",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const cookieStore = await cookies();
+  const localeFromCookie = cookieStore.get(LOCALE_COOKIE_KEY)?.value;
+  const initialLocale: Locale = localeFromCookie === "zh" ? "zh" : "en";
+
   return (
-    <html lang="en">
+    <html lang={initialLocale}>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#020813]`}
       >
         <QueryProvider>
-          <LocaleProvider>
+          <LocaleProvider initialLocale={initialLocale}>
             <CSSTransitionWrapper>{children}</CSSTransitionWrapper>
           </LocaleProvider>
         </QueryProvider>

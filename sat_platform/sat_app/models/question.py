@@ -46,6 +46,7 @@ class Question(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     source_id = db.Column(db.Integer, db.ForeignKey("question_sources.id"), index=True)
+    source_page = db.Column(db.Integer)
     question_uid = db.Column(
         db.String(32),
         nullable=False,

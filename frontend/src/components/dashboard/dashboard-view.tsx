@@ -7,11 +7,32 @@ import { AppShell } from "@/components/layout/app-shell";
 import { PlanBlocks } from "@/components/dashboard/plan-blocks";
 import { MasteryProgress } from "@/components/dashboard/mastery-progress";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
-import { PlanTask, ProgressEntry, StudyPlanDetail } from "@/types/learning";
+import { PlanBlock, PlanTask, ProgressEntry, StudyPlanDetail } from "@/types/learning";
 import { useI18n } from "@/hooks/use-i18n";
 import { skipDiagnosticAttempt } from "@/services/diagnostic";
 import { extractErrorMessage } from "@/lib/errors";
 import { DiagnosticStatus } from "@/types/diagnostic";
+
+const formatMinutesDuration = (minutes: number) => {
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return "—";
+  }
+  if (minutes < 60) {
+    return `${Math.round(minutes)} min`;
+  }
+  const hrs = Math.floor(minutes / 60);
+  const mins = Math.round(minutes % 60);
+  if (!mins) {
+    return `${hrs}h`;
+  }
+  return `${hrs}h ${mins}m`;
+};
+
+const formatEtaTime = (date: Date) =>
+  date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
 function deriveHighlights(
   plan: StudyPlanDetail | undefined,
@@ -80,6 +101,95 @@ export function DashboardView() {
   const latestProgress = progressQuery.data?.[progressQuery.data.length - 1];
   const fallbackHighlights = deriveHighlights(planDetail, latestProgress, t);
   const planBlocks = planDetail?.blocks ?? [];
+  const planBlocksById = useMemo(() => {
+    const map = new Map<string, PlanBlock>();
+    planBlocks.forEach((block) => {
+      if (block.block_id) {
+        map.set(block.block_id, block);
+      }
+    });
+    return map;
+  }, [planBlocks]);
+  const planProgressSummary = useMemo(() => {
+    if (!planDetail || !planBlocks.length) {
+      return null;
+    }
+    const totalQuestions =
+      planDetail.target_questions ??
+      planBlocks.reduce((sum, block) => sum + (block.questions ?? 0), 0);
+    const totalMinutes =
+      planDetail.target_minutes ?? planBlocks.reduce((sum, block) => sum + (block.minutes ?? 0), 0);
+    if (!totalQuestions && !totalMinutes) {
+      return null;
+    }
+    const avgMinutesPerQuestion =
+      totalQuestions > 0 && totalMinutes > 0 ? totalMinutes / totalQuestions : 0;
+    let completedQuestions = 0;
+    let consumedMinutes = 0;
+    Object.values(planTaskMap).forEach((task) => {
+      if (!task) return;
+      const block = task.block_id ? planBlocksById.get(task.block_id) : undefined;
+      const blockQuestions = block?.questions ?? task.questions_target ?? 0;
+      const blockMinutes = block?.minutes ?? (blockQuestions ? blockQuestions * avgMinutesPerQuestion : 0);
+      const perQuestionMinutes =
+        blockQuestions > 0
+          ? blockMinutes / blockQuestions
+          : avgMinutesPerQuestion || 0;
+      const completed = Math.min(
+        task.questions_completed ?? 0,
+        blockQuestions || (task.questions_completed ?? 0)
+      );
+      completedQuestions += completed;
+      consumedMinutes += perQuestionMinutes * completed;
+    });
+    const remainingQuestions = Math.max(totalQuestions - completedQuestions, 0);
+    const remainingMinutes = Math.max(totalMinutes - consumedMinutes, 0);
+    const etaDate =
+      remainingMinutes > 0 ? new Date(Date.now() + remainingMinutes * 60 * 1000) : null;
+    return {
+      remainingQuestions,
+      totalQuestions,
+      remainingMinutes,
+      totalMinutes,
+      etaDate,
+    };
+  }, [planBlocks, planBlocksById, planDetail, planTaskMap]);
+  const planSummaryStats = useMemo(() => {
+    if (!planProgressSummary) {
+      return [];
+    }
+    return [
+      {
+        label: t("plan.summary.remaining"),
+        value: `${planProgressSummary.remainingQuestions}/${planProgressSummary.totalQuestions}`,
+      },
+      {
+        label: t("plan.summary.timeLeft"),
+        value: formatMinutesDuration(planProgressSummary.remainingMinutes),
+      },
+      {
+        label: t("plan.summary.eta"),
+        value: planProgressSummary.etaDate
+          ? formatEtaTime(planProgressSummary.etaDate)
+          : t("plan.summary.etaUnset"),
+      },
+    ];
+  }, [planProgressSummary, t]);
+  const activePlanTask = useMemo(() => {
+    const tasks = planQuery.data?.tasks ?? planDetail?.tasks ?? [];
+    return tasks.find((task) => task.status === "active") ?? null;
+  }, [planDetail?.tasks, planQuery.data?.tasks]);
+  const floatingContinueInfo = useMemo(() => {
+    if (!activePlanTask || !activePlanTask.block_id) {
+      return null;
+    }
+    const block = planBlocksById.get(activePlanTask.block_id);
+    const skillLabel = block?.focus_skill_label ?? block?.focus_skill ?? "";
+    return {
+      href: `/plan/tasks/${encodeURIComponent(activePlanTask.block_id)}`,
+      skillLabel,
+    };
+  }, [activePlanTask, planBlocksById]);
   const sessionCount = progressQuery.data?.length ?? 0;
   const handleSkipDiagnostic = useCallback(async () => {
     setSkipError(null);
@@ -198,6 +308,18 @@ export function DashboardView() {
                     {isPlanRefreshing && (
                       <p className="mb-2 text-xs text-emerald-200/80">{t("plan.refreshing")}</p>
                     )}
+                    {planSummaryStats.length > 0 && (
+                      <div className="mb-4 flex flex-wrap gap-3">
+                        {planSummaryStats.map((stat) => (
+                          <div key={stat.label} className="stat-pill min-w-[160px] text-white">
+                            <p className="text-[11px] uppercase tracking-wide text-white/60">
+                              {stat.label}
+                            </p>
+                            <p className="text-base font-semibold">{stat.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <PlanBlocks blocks={planBlocks} taskMap={planTaskMap} />
                   </>
                 ) : (
@@ -261,6 +383,17 @@ export function DashboardView() {
           </Collapsible>
         </section>
       </div>
+      {floatingContinueInfo && (
+        <Link
+          href={floatingContinueInfo.href}
+          className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-semibold text-[#050E1F] shadow-lg shadow-emerald-500/20 transition hover:-translate-y-0.5 lg:right-12 lg:bottom-10"
+        >
+          <span>↺</span>
+          {t("plan.fab.continue", {
+            skill: floatingContinueInfo.skillLabel || t("plan.fab.genericSkill"),
+          })}
+        </Link>
+      )}
     </AppShell>
   );
 }

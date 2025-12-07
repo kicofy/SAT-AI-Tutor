@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/auth/login", "/auth/register"];
+const PUBLIC_PATHS = ["/auth/login", "/auth/register", "/auth/forgot-password", "/auth/reset-password"];
+const REDIRECT_WHEN_AUTHENTICATED = ["/auth/login", "/auth/register"];
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some((path) => pathname.startsWith(path));
+}
+
+function shouldRedirectHome(pathname: string) {
+  return REDIRECT_WHEN_AUTHENTICATED.some((path) => pathname.startsWith(path));
 }
 
 export function middleware(request: NextRequest) {
@@ -28,7 +33,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  if (token && isPublicPath(pathname)) {
+  if (token && shouldRedirectHome(pathname)) {
     const homeUrl = new URL("/", request.url);
     return NextResponse.redirect(homeUrl);
   }

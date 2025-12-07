@@ -31,15 +31,18 @@ function formatMessage(template: string, values?: Values) {
   );
 }
 
-export function LocaleProvider({ children }: PropsWithChildren) {
-  const [locale, setLocaleState] = useState<Locale>(() => {
-    if (typeof window === "undefined") {
-      return "en";
-    }
-    return getStoredLocale();
-  });
+type LocaleProviderProps = PropsWithChildren<{
+  initialLocale?: Locale;
+}>;
+
+export function LocaleProvider({ children, initialLocale = "en" }: LocaleProviderProps) {
+  const [locale, setLocaleState] = useState<Locale>(initialLocale);
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      setLocaleState(getStoredLocale());
+    }
+
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<Locale>).detail;
       if (detail === "en" || detail === "zh") {

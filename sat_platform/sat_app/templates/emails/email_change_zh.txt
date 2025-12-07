@@ -1,0 +1,12 @@
+SAT AI Tutor 邮箱修改确认
+
+您好 {{ name }}，
+
+请使用以下验证码确认将账户邮箱更新为 {{ new_email }}。验证码 {{ expires_minutes }} 分钟内有效。
+
+验证码：{{ code }}
+
+若不是您本人的操作，请忽略本邮件，原邮箱将保持不变。
+
+© {{ year }} SAT AI Tutor
+

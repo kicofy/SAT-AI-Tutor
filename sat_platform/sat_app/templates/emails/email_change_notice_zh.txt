@@ -1,0 +1,8 @@
+SAT AI Tutor 登录邮箱已更新
+
+您的登录邮箱已由 {{ old_email }} 更新为 {{ new_email }}。
+
+若非本人操作，请立即重置密码或联系 support@aisatmentor.com。
+
+© {{ year }} SAT AI Tutor
+

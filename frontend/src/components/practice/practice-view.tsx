@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { DashboardCard } from "@/components/ui/dashboard-card";
+import { AppShell } from "@/components/layout/app-shell";
 import {
   abortSession,
   endSession,
@@ -51,6 +52,7 @@ type QuestionProgress = {
   explanation?: AnimExplanation;
   revealedAnswer?: boolean;
   userChoice?: string | null;
+  timeSpentSec?: number;
 };
 
 const MIN_QUESTIONS = 1;
@@ -58,6 +60,18 @@ const DEFAULT_MAX_QUESTIONS = 12;
 
 const keyForQuestion = (sessionId: number, questionId: number) =>
   `${sessionId}-${questionId}`;
+
+const formatSeconds = (value: number): string => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "—";
+  }
+  if (value < 60) {
+    return `${value}s`;
+  }
+  const minutes = Math.floor(value / 60);
+  const seconds = value % 60;
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+};
 
 export function PracticeView({ planBlockId, autoResumeDiagnostic = false }: PracticeViewProps = {}) {
   const { t } = useI18n();
@@ -421,17 +435,6 @@ useEffect(() => {
     planDetail?.target_questions !== undefined
       ? t("practice.goalSummary.value", { count: planDetail.target_questions })
       : t("practice.goalSummary.custom");
-  const summaryStats = [
-    {
-      label: t("practice.summary.section"),
-      value:
-        sectionOptions.find((opt) => opt.id === prepConfig.section)?.label ?? prepConfig.section,
-    },
-    {
-      label: t("practice.summary.target"),
-      value: goalSummary,
-    },
-  ];
 
   const planSessionStats = useMemo(() => {
     if (!isPlanTaskMode) {
@@ -556,6 +559,7 @@ useEffect(() => {
           isCorrect: response.is_correct,
           logId: response.log_id,
           userChoice: selectedChoice,
+          timeSpentSec: elapsedSeconds ?? prev[progressKey]?.timeSpentSec,
         },
       }));
       updateLocalSessionProgress({
@@ -564,6 +568,7 @@ useEffect(() => {
         is_correct: response.is_correct,
         user_answer: { value: selectedChoice },
         answered_at: new Date().toISOString(),
+        time_spent_sec: elapsedSeconds,
       });
       if (isPlanTaskMode) {
         setPlanTask((prev) => {
@@ -673,6 +678,74 @@ useEffect(() => {
     return { total, completed, remaining: Math.max(total - completed, 0) };
   }, [session, questionProgress]);
 
+  const livePracticeStats = useMemo(() => {
+    if (!session) {
+      return null;
+    }
+    const total = session.questions_assigned.length;
+    if (!total) {
+      return { total: 0, completed: 0, accuracy: null, avgTime: null };
+    }
+    let completed = 0;
+    let correct = 0;
+    let totalTime = 0;
+    let timedCount = 0;
+    session.questions_assigned.forEach((question) => {
+      const key = keyForQuestion(session.id, question.question_id);
+      const entry = questionProgress[key];
+      if (!entry?.logId) {
+        return;
+      }
+      completed += 1;
+      if (entry.isCorrect) {
+        correct += 1;
+      }
+      if (typeof entry.timeSpentSec === "number") {
+        totalTime += entry.timeSpentSec;
+        timedCount += 1;
+      }
+    });
+    const accuracy = completed ? Math.round((correct / completed) * 100) : null;
+    const avgTime = completed ? Math.round(totalTime / (timedCount || completed)) : null;
+    return { total, completed, accuracy, avgTime };
+  }, [questionProgress, session]);
+  const summaryStats = useMemo(() => {
+    const stats = [
+      {
+        label: t("practice.summary.section"),
+        value:
+          sectionOptions.find((opt) => opt.id === prepConfig.section)?.label ?? prepConfig.section,
+      },
+      {
+        label: t("practice.summary.target"),
+        value: goalSummary,
+      },
+    ];
+    if (livePracticeStats && (session || livePracticeStats.completed > 0)) {
+      stats.push(
+        {
+          label: t("practice.summary.completed"),
+          value: `${livePracticeStats.completed}/${livePracticeStats.total || 0}`,
+        },
+        {
+          label: t("practice.summary.accuracy"),
+          value:
+            livePracticeStats.accuracy !== null
+              ? `${livePracticeStats.accuracy}%`
+              : t("common.placeholderDash"),
+        },
+        {
+          label: t("practice.summary.avgTime"),
+          value:
+            livePracticeStats.avgTime !== null
+              ? formatSeconds(livePracticeStats.avgTime)
+              : t("common.placeholderDash"),
+        }
+      );
+    }
+    return stats;
+  }, [goalSummary, livePracticeStats, prepConfig.section, sectionOptions, session, t]);
+
   const buildProgressMapFromEntries = useCallback(
     (sourceSession: Session) => {
       const map: Record<string, QuestionProgress> = {};
@@ -684,6 +757,7 @@ useEffect(() => {
           logId: entry.log_id,
           userChoice: entry.user_answer?.value ?? null,
           revealedAnswer: entry.is_correct !== undefined,
+          timeSpentSec: entry.time_spent_sec,
         };
       });
       return map;
@@ -857,7 +931,7 @@ useEffect(() => {
     }
   }, [autoResumeDiagnostic, hasAutoResumedDiagnostic, activeSession, resumeFromSession]);
 
-  return (
+  const pageContent = (
     <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-0">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         {isPlanTaskMode ? (
@@ -1438,6 +1512,12 @@ useEffect(() => {
       )}
     </div>
   );
+
+  if (viewState === "active") {
+    return pageContent;
+  }
+
+  return <AppShell contentClassName="w-full">{pageContent}</AppShell>;
 }
 
 function FigureReference({

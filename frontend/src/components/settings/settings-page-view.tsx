@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAuthStore } from "@/stores/auth-store";
@@ -25,10 +25,14 @@ export function SettingsPageView() {
   const updateUser = useAuthStore((state) => state.updateUser);
 
   const [language, setLanguage] = useState<"en" | "zh" | "bilingual">("en");
-  const [email, setEmail] = useState("");
   const [langStatus, setLangStatus] = useState<StatusState>({ state: "idle" });
-  const [emailStatus, setEmailStatus] = useState<StatusState>({ state: "idle" });
   const [passwordStatus, setPasswordStatus] = useState<StatusState>({ state: "idle" });
+  const [emailSendStatus, setEmailSendStatus] = useState<StatusState>({ state: "idle" });
+  const [emailVerifyStatus, setEmailVerifyStatus] = useState<StatusState>({ state: "idle" });
+  const [newEmail, setNewEmail] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [hasSentCode, setHasSentCode] = useState(false);
+  const [sendCooldown, setSendCooldown] = useState(0);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -37,9 +41,22 @@ export function SettingsPageView() {
 
   useEffect(() => {
     if (!user) return;
-    setEmail(user.email ?? "");
     setLanguage(languagePreference);
+    setNewEmail("");
+    setVerificationCode("");
+    setHasSentCode(false);
+    setSendCooldown(0);
+    setEmailSendStatus({ state: "idle" });
+    setEmailVerifyStatus({ state: "idle" });
   }, [user, languagePreference]);
+
+  useEffect(() => {
+    if (sendCooldown <= 0) return;
+    const timer = setTimeout(() => {
+      setSendCooldown((prev) => Math.max(prev - 1, 0));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [sendCooldown]);
 
   const loadingFallback = (
     <div className="col-span-full mx-auto w-full max-w-4xl px-4 py-20 text-center text-white/60">
@@ -52,7 +69,8 @@ export function SettingsPageView() {
   }
 
   const isLangLoading = langStatus.state === "loading";
-  const isEmailLoading = emailStatus.state === "loading";
+  const isSendLoading = emailSendStatus.state === "loading";
+  const isVerifyLoading = emailVerifyStatus.state === "loading";
   const isPasswordLoading = passwordStatus.state === "loading";
 
   async function handleLanguageSave(event: FormEvent) {
@@ -70,19 +88,55 @@ export function SettingsPageView() {
     }
   }
 
-  async function handleEmailSave(event: FormEvent) {
+  async function handleEmailCodeRequest(event: FormEvent | MouseEvent<HTMLButtonElement>) {
     event.preventDefault();
-    if (!email?.trim()) {
-      setEmailStatus({ state: "error", message: t("settings.error.generic") });
+    if (!newEmail?.trim()) {
+      setEmailSendStatus({ state: "error", message: t("settings.error.generic") });
       return;
     }
-    setEmailStatus({ state: "loading" });
+    if (user?.email && newEmail.trim().toLowerCase() === user.email.toLowerCase()) {
+      setEmailSendStatus({ state: "error", message: t("settings.email.sameAsCurrent") });
+      return;
+    }
+    setEmailSendStatus({ state: "loading" });
     try {
-      const updated = await AuthService.updateProfileSettings({ email: email.trim() });
-      updateUser(updated);
-      setEmailStatus({ state: "success", message: t("settings.email.success") });
+      await AuthService.requestEmailChangeCode(newEmail.trim());
+      setEmailSendStatus({ state: "success", message: t("settings.email.codeSent") });
+      setHasSentCode(true);
+      setSendCooldown(60);
     } catch (error) {
-      setEmailStatus({
+      setEmailSendStatus({
+        state: "error",
+        message: extractErrorMessage(error, t("settings.error.generic")),
+      });
+    }
+  }
+
+  async function handleEmailConfirm(event: FormEvent) {
+    event.preventDefault();
+    if (!hasSentCode) {
+      setEmailVerifyStatus({ state: "error", message: t("settings.email.needCode") });
+      return;
+    }
+    if (!verificationCode?.trim()) {
+      setEmailVerifyStatus({ state: "error", message: t("settings.error.generic") });
+      return;
+    }
+    setEmailVerifyStatus({ state: "loading" });
+    try {
+      const updated = await AuthService.confirmEmailChange({
+        newEmail: newEmail.trim(),
+        code: verificationCode.trim(),
+      });
+      updateUser(updated);
+      setEmailVerifyStatus({ state: "success", message: t("settings.email.success") });
+      setNewEmail("");
+      setVerificationCode("");
+      setHasSentCode(false);
+      setSendCooldown(0);
+      setEmailSendStatus({ state: "idle" });
+    } catch (error) {
+      setEmailVerifyStatus({
         state: "error",
         message: extractErrorMessage(error, t("settings.error.generic")),
       });
@@ -171,27 +225,67 @@ export function SettingsPageView() {
 
         <section className="card-ambient space-y-5 rounded-3xl border border-white/10 bg-[#0b1424] p-6">
           <SectionHeader title={t("settings.email.title")} description={t("settings.email.description")} />
-        <form className="space-y-6" onSubmit={handleEmailSave}>
+          <form className="space-y-6" onSubmit={handleEmailConfirm}>
             <label className="text-sm text-white/70">
-              <span className="text-xs uppercase tracking-wide text-white/40">{t("settings.email.label")}</span>
+              <span className="text-xs uppercase tracking-wide text-white/40">{t("settings.email.currentLabel")}</span>
               <input
                 type="email"
-                className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white/90 placeholder:text-white/40"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder={t("settings.email.placeholder")}
-                required
+                className="mt-2 w-full cursor-not-allowed rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white/70"
+                value={user.email ?? ""}
+                disabled
               />
             </label>
-          <div className="mt-4 flex flex-wrap items-center gap-3">
+
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+              <label className="flex-1 text-sm text-white/70">
+                <span className="text-xs uppercase tracking-wide text-white/40">{t("settings.email.newLabel")}</span>
+                <input
+                  type="email"
+                  className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white/90 placeholder:text-white/40"
+                  value={newEmail}
+                  onChange={(event) => setNewEmail(event.target.value)}
+                  placeholder={t("settings.email.placeholder")}
+                  required
+                />
+              </label>
+              <button
+                type="button"
+                className="btn-cta px-4 py-3 text-sm sm:w-auto"
+                onClick={handleEmailCodeRequest}
+                disabled={isSendLoading || !newEmail || sendCooldown > 0}
+              >
+                {isSendLoading
+                  ? t("settings.saving")
+                  : sendCooldown > 0
+                  ? t("settings.email.resendIn", { seconds: sendCooldown })
+                  : t("settings.email.send")}
+              </button>
+            </div>
+            <FormStatus status={emailSendStatus} />
+            <p className="text-xs text-white/50">{t("settings.email.verificationHint")}</p>
+
+            <label className="text-sm text-white/70">
+              <span className="text-xs uppercase tracking-wide text-white/40">{t("settings.email.codeLabel")}</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white/90 placeholder:text-white/40"
+                value={verificationCode}
+                onChange={(event) => setVerificationCode(event.target.value)}
+                placeholder="000000"
+                disabled={!hasSentCode}
+              />
+            </label>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="submit"
                 className="btn-cta px-4 py-2 text-sm"
-                disabled={isEmailLoading}
+                disabled={!hasSentCode || isVerifyLoading}
               >
-                {isEmailLoading ? t("settings.saving") : t("settings.email.save")}
+                {isVerifyLoading ? t("settings.saving") : t("settings.email.verify")}
               </button>
-              <FormStatus status={emailStatus} />
+              <FormStatus status={emailVerifyStatus} />
             </div>
           </form>
         </section>

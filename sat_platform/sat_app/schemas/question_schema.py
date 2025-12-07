@@ -35,6 +35,7 @@ class QuestionCreateSchema(Schema):
     skill_tags = fields.List(fields.String())
     estimated_time_sec = fields.Integer()
     source = fields.String()
+    source_page = fields.Integer(allow_none=True, load_default=None)
     page = fields.String()
     index_in_set = fields.Integer()
     metadata = fields.Dict(attribute="metadata_json", data_key="metadata", load_default=None)

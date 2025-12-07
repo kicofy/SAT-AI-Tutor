@@ -8,6 +8,7 @@ import pytest
 
 from sat_app.extensions import db
 from sat_app.models import QuestionDraft, Question, QuestionFigure, QuestionImportJob, QuestionSource, User
+from sat_app.services import question_service
 
 
 @pytest.fixture()
@@ -104,6 +105,40 @@ def test_pdf_ingest_flow(client, admin_token, mock_pdf_ingest):
         assert drafts[0].payload["skill_tags"] == ["RW_DataInterpretation"]
         assert drafts[0].source_id == data["source_id"]
         assert QuestionSource.query.count() == 1
+
+
+def test_pdf_ingest_duplicate_requires_confirmation(client, admin_token, mock_pdf_ingest):
+    first_payload = io.BytesIO(b"%PDF-1.4 original")
+    resp = client.post(
+        "/api/admin/questions/ingest-pdf",
+        data={"file": (first_payload, "vision.pdf")},
+        headers={"Authorization": f"Bearer {admin_token}"},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 202
+
+    second_payload = io.BytesIO(b"%PDF-1.4 new-content")
+    duplicate_resp = client.post(
+        "/api/admin/questions/ingest-pdf",
+        data={"file": (second_payload, "vision.pdf")},
+        headers={"Authorization": f"Bearer {admin_token}"},
+        content_type="multipart/form-data",
+    )
+    assert duplicate_resp.status_code == 409
+    payload = duplicate_resp.get_json()
+    assert payload["error"] == "duplicate_source"
+    assert payload["source"]["filename"] == "vision.pdf"
+
+    forced_payload = io.BytesIO(b"%PDF-1.4 forced")
+    forced_resp = client.post(
+        "/api/admin/questions/ingest-pdf",
+        data={"file": (forced_payload, "vision.pdf"), "force": "true"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+        content_type="multipart/form-data",
+    )
+    assert forced_resp.status_code == 202
+    with client.application.app_context():
+        assert QuestionSource.query.count() == 2
 
 
 def _create_manual_draft(client, admin_token):
@@ -277,5 +312,62 @@ def test_publish_moves_uploaded_figure(client, admin_token, tmp_path):
         assert figure is not None
         assert figure.draft_id is None
         assert figure.question_id == question_id
+
+
+def test_source_deleted_when_questions_removed(client, admin_token):
+    with client.application.app_context():
+        admin = User.query.filter_by(role="admin").first()
+        assert admin is not None
+    source = QuestionSource(
+        filename="auto-prune.pdf",
+        original_name="auto-prune.pdf",
+        stored_path="/tmp/auto-prune.pdf",
+        uploaded_by=admin.id,
+    )
+    db.session.add(source)
+    db.session.flush()
+    job = QuestionImportJob(user_id=admin.id, source_id=source.id, ingest_strategy="vision_pdf")
+    db.session.add(job)
+    db.session.flush()
+    draft = QuestionDraft(
+        job_id=job.id,
+        source_id=source.id,
+        payload={
+            "section": "RW",
+            "stem_text": "Placeholder stem",
+            "choices": {"A": "Alpha"},
+            "correct_answer": {"value": "A"},
+        },
+    )
+    db.session.add(draft)
+    question = Question(
+        source_id=source.id,
+        section="RW",
+        stem_text="Keep or delete?",
+        choices={"A": "Alpha"},
+        correct_answer={"value": "A"},
+    )
+    db.session.add(question)
+    db.session.commit()
+
+    target_question = db.session.get(Question, question.id)
+    question_service.delete_question(target_question)
+
+    assert db.session.get(QuestionSource, source.id) is not None
+    assert QuestionDraft.query.filter_by(source_id=source.id).count() == 1
+    job_ref = db.session.get(QuestionImportJob, job.id)
+    assert job_ref is not None
+    assert job_ref.source_id == source.id
+
+    QuestionDraft.query.filter_by(source_id=source.id).delete()
+    db.session.commit()
+
+    question_service._delete_source_if_unused(source.id)
+    db.session.commit()
+
+    assert db.session.get(QuestionSource, source.id) is None
+    job_ref = db.session.get(QuestionImportJob, job.id)
+    assert job_ref is not None
+    assert job_ref.source_id is None
 
 

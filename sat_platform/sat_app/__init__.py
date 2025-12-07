@@ -142,6 +142,8 @@ def _ensure_schema(app: Flask) -> None:
     with app.app_context():
         db.create_all()
         _ensure_email_verification_columns()
+        _ensure_user_status_columns()
+        _ensure_password_reset_columns()
 
 
 def _register_cli(app: Flask) -> None:
@@ -346,6 +348,90 @@ def _ensure_email_verification_columns() -> None:
         trans.rollback()
         current_app.logger.debug(
             "Skipping automatic email verification column patch",
+            exc_info=True,
+        )
+    finally:
+        connection.close()
+
+
+def _ensure_user_status_columns() -> None:
+    inspector = inspect(db.engine)
+    if "users" not in inspector.get_table_names():
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("users")}
+    dialect = db.engine.dialect.name
+    boolean_type = "BOOLEAN" if dialect != "sqlite" else "INTEGER"
+    datetime_type = "TIMESTAMP" if dialect != "sqlite" else "TEXT"
+    default_true = "TRUE" if dialect != "sqlite" else "1"
+
+    statements: list[str] = []
+
+    if "is_active" not in columns:
+        statements.append(
+            f"ALTER TABLE users ADD COLUMN is_active {boolean_type} NOT NULL DEFAULT {default_true}"
+        )
+    if "locked_reason" not in columns:
+        statements.append("ALTER TABLE users ADD COLUMN locked_reason VARCHAR(255)")
+    if "locked_at" not in columns:
+        statements.append(f"ALTER TABLE users ADD COLUMN locked_at {datetime_type}")
+
+    if not statements:
+        return
+
+    connection = db.engine.connect()
+    trans = connection.begin()
+    try:
+        for statement in statements:
+            connection.execute(text(statement))
+        connection.execute(text("UPDATE users SET is_active = 1 WHERE is_active IS NULL"))
+        trans.commit()
+    except Exception:  # pragma: no cover - defensive logging
+        trans.rollback()
+        current_app.logger.debug(
+            "Skipping automatic user status column patch",
+            exc_info=True,
+        )
+    finally:
+        connection.close()
+
+
+def _ensure_password_reset_columns() -> None:
+    inspector = inspect(db.engine)
+    if "users" not in inspector.get_table_names():
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("users")}
+    dialect = db.engine.dialect.name
+    varchar_type = "VARCHAR(255)" if dialect != "sqlite" else "TEXT"
+    datetime_type = "TIMESTAMP" if dialect != "sqlite" else "TEXT"
+
+    statements: list[str] = []
+
+    if "password_reset_token" not in columns:
+        statements.append(f"ALTER TABLE users ADD COLUMN password_reset_token {varchar_type}")
+    if "password_reset_requested_at" not in columns:
+        statements.append(
+            f"ALTER TABLE users ADD COLUMN password_reset_requested_at {datetime_type}"
+        )
+    if "password_reset_expires_at" not in columns:
+        statements.append(
+            f"ALTER TABLE users ADD COLUMN password_reset_expires_at {datetime_type}"
+        )
+
+    if not statements:
+        return
+
+    connection = db.engine.connect()
+    trans = connection.begin()
+    try:
+        for statement in statements:
+            connection.execute(text(statement))
+        trans.commit()
+    except Exception:  # pragma: no cover - defensive logging
+        trans.rollback()
+        current_app.logger.debug(
+            "Skipping automatic password reset column patch",
             exc_info=True,
         )
     finally:

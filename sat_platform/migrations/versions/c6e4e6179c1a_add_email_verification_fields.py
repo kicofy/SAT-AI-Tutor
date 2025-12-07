@@ -73,10 +73,11 @@ def upgrade():
         sa.Column("email_verification_sent_window_start", sa.DateTime(timezone=True)),
     )
 
-    # remove server defaults now that existing rows are initialized
-    op.alter_column("users", "is_email_verified", server_default=None)
-    op.alter_column("users", "email_verification_attempts", server_default=None)
-    op.alter_column("users", "email_verification_sent_count", server_default=None)
+    # remove server defaults now that existing rows are initialized (skip on SQLite)
+    if bind.dialect.name != "sqlite":
+        op.alter_column("users", "is_email_verified", server_default=None)
+        op.alter_column("users", "email_verification_attempts", server_default=None)
+        op.alter_column("users", "email_verification_sent_count", server_default=None)
 
 
 def downgrade():

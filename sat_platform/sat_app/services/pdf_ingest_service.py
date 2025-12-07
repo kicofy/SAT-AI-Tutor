@@ -374,8 +374,13 @@ def _normalize_question(
 
     data["section"] = _coerce_section(data.get("section"))
     data["has_figure"] = bool(question_payload.get("has_figure"))
-    if "page" not in data and question_payload.get("page"):
-        data["page"] = str(question_payload.get("page"))
+    if question_payload.get("page"):
+        page_value = question_payload.get("page")
+        data.setdefault("page", str(page_value))
+        try:
+            data["source_page"] = int(page_value)
+        except (TypeError, ValueError):
+            pass
     source_number = _extract_question_number(question_payload)
     if source_number is not None:
         metadata = data.get("metadata") or {}

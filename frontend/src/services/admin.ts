@@ -3,13 +3,18 @@ import {
   AdminSource,
   AdminSourceDetail,
   AdminUser,
+  AdminUserDetail,
   PaginatedResponse,
   AdminQuestion,
 } from "@/types/admin";
+import { FigureSource } from "@/types/figure";
 
-export async function ingestPdf(file: File) {
+export async function ingestPdf(file: File, options?: { force?: boolean }) {
   const formData = new FormData();
   formData.append("file", file);
+  if (options?.force) {
+    formData.append("force", "true");
+  }
   const { data } = await api.post(
     "/api/admin/questions/ingest-pdf",
     formData,
@@ -42,6 +47,14 @@ export async function publishDraft(draftId: number) {
   return data;
 }
 
+export async function updateDraft(
+  draftId: number,
+  payload: Partial<AdminQuestion>
+): Promise<{ draft: unknown }> {
+  const { data } = await api.patch(`/api/admin/questions/drafts/${draftId}`, payload);
+  return data;
+}
+
 export async function fetchDraftFigureSource(draftId: number) {
   const { data } = await api.get(`/api/admin/questions/drafts/${draftId}/figure-source`);
   return data as { page: number; image: string; width: number; height: number };
@@ -65,6 +78,24 @@ export async function fetchDraftFigures(draftId: number) {
 
 export async function deleteDraftFigure(draftId: number, figureId: number) {
   await api.delete(`/api/admin/questions/drafts/${draftId}/figures/${figureId}`);
+}
+
+export async function fetchQuestionFigureSource(questionId: number, page?: number) {
+  const { data } = await api.get(`/api/admin/questions/${questionId}/figure-source`, {
+    params: page ? { page } : undefined,
+  });
+  return data as FigureSource;
+}
+
+export async function uploadQuestionFigure(questionId: number, formData: FormData) {
+  const { data } = await api.post(`/api/admin/questions/${questionId}/figure`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function deleteQuestionFigure(questionId: number, figureId: number) {
+  await api.delete(`/api/admin/questions/${questionId}/figures/${figureId}`);
 }
 
 export async function fetchOpenaiLogs(limit = 100) {
@@ -101,7 +132,7 @@ export async function getAdminUsers(params: {
   return data;
 }
 
-export async function getAdminUser(userId: number): Promise<{ user: AdminUser }> {
+export async function getAdminUser(userId: number): Promise<AdminUserDetail> {
   const { data } = await api.get(`/api/admin/users/${userId}`);
   return data;
 }
@@ -111,6 +142,8 @@ export async function updateAdminUser(
   payload: Partial<Pick<AdminUser, "email" | "username" | "role">> & {
     language_preference?: string;
     reset_password?: string;
+    is_active?: boolean;
+    locked_reason?: string | null;
   }
 ): Promise<{ user: AdminUser }> {
   const { data } = await api.patch(`/api/admin/users/${userId}`, payload);

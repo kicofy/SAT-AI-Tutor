@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import List
+from typing import List, Tuple
 
 from flask import current_app
 
@@ -25,8 +25,41 @@ def _serialize_session(session: StudySession) -> dict:
     }
 
 
+def _prepare_mastery_payload(mastery_entries: List[dict]) -> Tuple[List[dict], dict]:
+    transformed: List[dict] = []
+    missing_labels: List[str] = []
+    observed = 0
+    for entry in mastery_entries:
+        label = entry.get("label") or entry.get("skill_tag")
+        observed_score = entry.get("observed_score")
+        has_data = bool(entry.get("has_data") or entry.get("sample_count", 0))
+        if has_data:
+            observed += 1
+        else:
+            missing_labels.append(label)
+        transformed.append(
+            {
+                "skill_tag": entry.get("skill_tag"),
+                "label": label,
+                "has_data": has_data,
+                "observed_score": observed_score,
+                "observed_percent": round(observed_score * 100, 1) if isinstance(observed_score, (int, float)) else None,
+                "last_practiced_at": entry.get("last_practiced_at"),
+            }
+        )
+    total = len(mastery_entries)
+    summary = {
+        "total_skills": total,
+        "skills_with_data": observed,
+        "skills_without_data": total - observed,
+        "missing_skill_labels": missing_labels,
+    }
+    return transformed, summary
+
+
 def _build_payload(user: User, plan_detail: dict, sessions: List[StudySession], mastery: List[dict]) -> dict:
     session_payload = [_serialize_session(s) for s in sessions]
+    mastery_payload, mastery_summary = _prepare_mastery_payload(mastery)
     return {
         "student": {
             "id": user.id,
@@ -37,10 +70,13 @@ def _build_payload(user: User, plan_detail: dict, sessions: List[StudySession], 
         },
         "plan": plan_detail,
         "sessions": session_payload,
-        "mastery": mastery,
+        "mastery": mastery_payload,
         "meta": {
             "recent_session_count": len(session_payload),
             "has_recent_sessions": bool(session_payload),
+            "has_mastery_observations": mastery_summary["skills_with_data"] > 0,
+            "missing_mastery_skills": mastery_summary["missing_skill_labels"],
+            "mastery_summary": mastery_summary,
         },
     }
 
@@ -78,6 +114,8 @@ def _call_ai(payload: dict, language: str) -> dict:
         '{"notes":[{"title":"","body":"","priority":"info|warning|success"}]}. '
         "Return at most 3 notes, each no more than 25 words. Use the student's language preference."
         "If meta.has_recent_sessions is false, treat the student as brand new and mention that practice data is not yet available."
+        "Mastery items include has_data and observed_score. Only cite percentages when has_data is true."
+        "When has_data is false, explicitly state that there is no data for that skill instead of assuming 50%."
     )
     user_prompt = json.dumps(payload, ensure_ascii=False)
     messages = [

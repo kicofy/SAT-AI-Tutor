@@ -39,6 +39,7 @@ export type SessionProgressEntry = {
   is_correct?: boolean;
   user_answer?: QuestionAnswer | null;
   diagnostic_skill?: string;
+  time_spent_sec?: number;
 };
 
 export type Session = {

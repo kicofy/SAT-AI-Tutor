@@ -39,15 +39,11 @@ export async function fetchProfile(): Promise<User> {
 }
 
 type UpdateProfilePayload = {
-  email?: string;
   languagePreference?: "en" | "zh" | "bilingual";
 };
 
 export async function updateProfileSettings(payload: UpdateProfilePayload): Promise<User> {
   const body: Record<string, string> = {};
-  if (payload.email) {
-    body.email = payload.email;
-  }
   if (payload.languagePreference) {
     body.language_preference = payload.languagePreference;
   }
@@ -75,5 +71,29 @@ export async function requestRegistrationCode(payload: {
     email: payload.email,
     language_preference: payload.languagePreference ?? "en",
   });
+}
+
+export async function requestEmailChangeCode(newEmail: string): Promise<void> {
+  await api.post("/api/auth/email/change/request", { new_email: newEmail });
+}
+
+export async function confirmEmailChange(payload: { newEmail: string; code: string }): Promise<User> {
+  const { data } = await api.post<{ user: User }>("/api/auth/email/change/confirm", {
+    new_email: payload.newEmail,
+    code: payload.code,
+  });
+  return data.user;
+}
+
+export async function requestPasswordReset(identifier: string): Promise<void> {
+  await api.post("/api/auth/password/reset/request", { identifier });
+}
+
+export async function confirmPasswordReset(payload: { token: string; newPassword: string }): Promise<User> {
+  const { data } = await api.post<{ user: User }>("/api/auth/password/reset/confirm", {
+    token: payload.token,
+    new_password: payload.newPassword,
+  });
+  return data.user;
 }
 

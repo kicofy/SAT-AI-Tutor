@@ -10,10 +10,13 @@ from ..extensions import db
 from ..models import (
     Passage,
     Question,
+    QuestionDraft,
     QuestionExplanationCache,
     QuestionFigure,
-    UserQuestionLog,
+    QuestionImportJob,
+    QuestionSource,
     QuestionReview,
+    UserQuestionLog,
 )
 
 
@@ -39,7 +42,10 @@ def list_questions(
 
 def get_question(question_id: int) -> Question:
     question = (
-        Question.query.options(joinedload(Question.passage))
+        Question.query.options(
+            joinedload(Question.passage),
+            joinedload(Question.source),
+        )
         .filter(Question.id == question_id)
         .first()
     )
@@ -82,10 +88,30 @@ def update_question(question: Question, payload: dict) -> Question:
 
 
 def delete_question(question: Question) -> None:
+    source_id = question.source_id
     UserQuestionLog.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     QuestionReview.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     QuestionExplanationCache.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     QuestionFigure.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     db.session.delete(question)
+    db.session.flush()
+    if source_id:
+        _delete_source_if_unused(source_id)
     db.session.commit()
+
+
+def _delete_source_if_unused(source_id: int) -> None:
+    remaining_questions = Question.query.filter_by(source_id=source_id).count()
+    if remaining_questions:
+        return
+    remaining_drafts = QuestionDraft.query.filter_by(source_id=source_id).count()
+    if remaining_drafts:
+        return
+    source = db.session.get(QuestionSource, source_id)
+    if not source:
+        return
+    QuestionImportJob.query.filter_by(source_id=source_id).update(
+        {"source_id": None}, synchronize_session=False
+    )
+    db.session.delete(source)
 

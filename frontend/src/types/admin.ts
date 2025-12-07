@@ -1,4 +1,5 @@
 import { UserProfile } from "@/types/auth";
+import { QuestionFigureRef } from "@/types/session";
 
 export type Pagination = {
   page: number;
@@ -20,12 +21,43 @@ export type AdminUser = {
   username: string;
   role: "student" | "admin";
   is_email_verified: boolean;
+  is_active?: boolean;
+  locked_reason?: string | null;
+  locked_at?: string | null;
   created_at?: string | null;
   profile?: UserProfile | null;
 };
 
+export type UserLearningSnapshot = {
+  last_active_at: string | null;
+  total_questions: number;
+  accuracy_percent: number | null;
+  avg_time_sec: number | null;
+  plan_tasks_completed: number;
+  plan_tasks_total: number;
+  active_plan?: {
+    block_id?: string | null;
+    status?: string | null;
+    section?: string | null;
+    focus_skill?: string | null;
+    questions_target?: number | null;
+    plan_date?: string | null;
+    updated_at?: string | null;
+  } | null;
+  predicted_score_rw?: number | null;
+  predicted_score_math?: number | null;
+  avg_difficulty?: number | null;
+};
+
 export type AdminUserDetail = {
   user: AdminUser;
+  snapshot: UserLearningSnapshot | null;
+};
+
+export type QuestionPassage = {
+  id?: number;
+  content_text: string;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type AdminQuestion = {
@@ -33,11 +65,21 @@ export type AdminQuestion = {
   question_uid?: string | null;
   section: string;
   sub_section?: string | null;
+  passage?: QuestionPassage | null;
   difficulty_level?: number | null;
   stem_text?: string | null;
   skill_tags?: string[];
-  correct_answer?: { value?: string | null } | null;
   choices?: Record<string, string>;
+  correct_answer?: { value?: string | null } | null;
+  estimated_time_sec?: number | null;
+  irt_a?: number | null;
+  irt_b?: number | null;
+  source_page?: number | null;
+  page?: string | null;
+  index_in_set?: number | null;
+  metadata?: Record<string, unknown> | null;
+  has_figure?: boolean;
+  figures?: QuestionFigureRef[];
   source?: {
     id: number;
     filename?: string | null;

@@ -14,6 +14,7 @@ from . import (
     openai_log,
     mail_service,
     verification_service,
+    password_reset_service,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "openai_log",
     "mail_service",
     "verification_service",
+    "password_reset_service",
 ]

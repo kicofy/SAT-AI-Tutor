@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./auth.css";
 
 export const metadata: Metadata = {
-  title: "登录 - SAT AI Tutor",
+  title: "SAT AI Tutor",
 };
 
 export default function AuthLayout({

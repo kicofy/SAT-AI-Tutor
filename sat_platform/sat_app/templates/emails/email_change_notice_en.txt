@@ -1,0 +1,8 @@
+Your SAT AI Tutor email was updated
+
+This confirms your login email changed from {{ old_email }} to {{ new_email }}.
+
+If you didn’t make this change, reset your password immediately or contact support@aisatmentor.com.
+
+© {{ year }} SAT AI Tutor
+

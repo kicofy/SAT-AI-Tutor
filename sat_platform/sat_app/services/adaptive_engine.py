@@ -84,14 +84,18 @@ def get_mastery_snapshot(user_id: int) -> list[dict]:
         bucket = aggregates[tag]
         meta = describe_skill(tag)
         count = bucket["count"]
-        mastery_score = bucket["score_sum"] / count if count else _initial_mastery()
+        observed_score = bucket["score_sum"] / count if count else None
+        fallback_score = observed_score if observed_score is not None else _initial_mastery()
         snapshot.append(
             {
                 "skill_tag": tag,
                 "label": meta["label"],
                 "domain": meta["domain"],
                 "description": meta["description"],
-                "mastery_score": mastery_score,
+                "mastery_score": fallback_score,
+                "observed_score": observed_score,
+                "has_data": bool(count),
+                "sample_count": count,
                 "success_streak": bucket["success_streak"] if count else 0,
                 "last_practiced_at": bucket["last"].isoformat() if bucket["last"] else None,
             }

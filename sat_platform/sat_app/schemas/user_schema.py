@@ -51,17 +51,28 @@ class UserSchema(Schema):
     role = fields.String(dump_only=True)
     is_root = fields.Boolean(dump_only=True)
     is_email_verified = fields.Boolean(dump_only=True)
+    is_active = fields.Boolean(dump_only=True)
+    locked_reason = fields.String(dump_only=True, allow_none=True)
+    locked_at = fields.DateTime(dump_only=True)
     created_at = fields.DateTime(dump_only=True)
     profile = fields.Nested(PublicUserProfileSchema, dump_only=True)
 
 
 class UpdateProfileSchema(Schema):
-    email = fields.Email()
     language_preference = fields.String(validate=validate.OneOf(LANG_CHOICES))
 
 
 class PasswordChangeSchema(Schema):
     current_password = fields.String(required=True)
+    new_password = fields.String(required=True, validate=validate.Length(min=8))
+
+
+class PasswordResetRequestSchema(Schema):
+    identifier = fields.String(required=True, validate=validate.Length(min=3, max=255))
+
+
+class PasswordResetConfirmSchema(Schema):
+    token = fields.String(required=True, validate=validate.Length(min=10))
     new_password = fields.String(required=True, validate=validate.Length(min=8))
 
 
@@ -77,4 +88,13 @@ class EmailResendSchema(Schema):
 class VerificationRequestSchema(Schema):
     email = fields.Email(required=True)
     language_preference = fields.String(validate=validate.OneOf(("en", "zh")), load_default="en")
+
+
+class EmailChangeRequestSchema(Schema):
+    new_email = fields.Email(required=True)
+
+
+class EmailChangeConfirmSchema(Schema):
+    new_email = fields.Email(required=True)
+    code = fields.String(required=True, validate=validate.Length(equal=6))
 

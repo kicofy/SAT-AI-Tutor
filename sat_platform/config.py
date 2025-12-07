@@ -95,6 +95,7 @@ class BaseConfig:
     MAIL_IMAP_SERVER = os.getenv("MAIL_IMAP_SERVER", "imappro.zoho.com")
     MAIL_IMAP_PORT = int(os.getenv("MAIL_IMAP_PORT", "993"))
     MAIL_IMAP_USE_SSL = os.getenv("MAIL_IMAP_USE_SSL", "true").lower() in {"1", "true", "yes"}
+    PASSWORD_RESET_URL = os.getenv("PASSWORD_RESET_URL", "http://localhost:3000/auth/reset-password")
     if SQLALCHEMY_DATABASE_URI.startswith("sqlite"):
         SQLALCHEMY_ENGINE_OPTIONS = {"poolclass": NullPool}
     else:

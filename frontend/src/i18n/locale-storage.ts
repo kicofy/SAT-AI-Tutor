@@ -1,6 +1,7 @@
 import { Locale } from "./messages";
 
 export const LOCALE_STORAGE_KEY = "sat-locale";
+export const LOCALE_COOKIE_KEY = "sat_locale";
 export const LOCALE_EVENT = "sat:locale-changed";
 
 export function getStoredLocale(): Locale {
@@ -19,6 +20,10 @@ export function persistLocale(locale: Locale) {
     return;
   }
   window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+  if (typeof document !== "undefined") {
+    const maxAge = 60 * 60 * 24 * 365;
+    document.cookie = `${LOCALE_COOKIE_KEY}=${locale};path=/;max-age=${maxAge};samesite=lax`;
+  }
   window.dispatchEvent(new CustomEvent(LOCALE_EVENT, { detail: locale }));
 }
 
