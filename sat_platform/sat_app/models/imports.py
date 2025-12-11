@@ -125,7 +125,7 @@ class QuestionDraft(db.Model):
             "source_id": self.source_id,
             "payload": payload,
             "is_verified": self.is_verified,
-            "requires_figure": bool(payload.get("has_figure")),
+            "requires_figure": bool(payload.get("has_figure") or payload.get("choice_figure_keys")),
             "figure_count": self.figures.count(),
             "created_at": _isoformat(self.created_at),
             "updated_at": _isoformat(self.updated_at),

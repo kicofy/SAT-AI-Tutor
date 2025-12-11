@@ -26,6 +26,9 @@ class User(db.Model):
     locked_at = db.Column(db.DateTime(timezone=True))
     is_root = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    membership_expires_at = db.Column(db.DateTime(timezone=True))
+    ai_explain_quota_date = db.Column(db.Date)
+    ai_explain_quota_used = db.Column(db.Integer, nullable=False, default=0)
     is_email_verified = db.Column(db.Boolean, nullable=False, default=False)
     email_verification_code = db.Column(db.String(12))
     email_verification_expires_at = db.Column(db.DateTime(timezone=True))
@@ -59,6 +62,7 @@ class UserProfile(db.Model):
     target_score_math = db.Column(db.Integer)
     exam_date = db.Column(db.Date)
     daily_available_minutes = db.Column(db.Integer, default=60, nullable=False)
+    daily_plan_questions = db.Column(db.Integer, default=12, nullable=False)
     language_preference = db.Column(db.String(20), default="bilingual", nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = db.Column(
@@ -92,4 +96,17 @@ class EmailVerificationTicket(db.Model):
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"<EmailVerificationTicket email={self.email} purpose={self.purpose}>"
+
+
+class UserSubscriptionLog(db.Model):
+    __tablename__ = "user_subscription_logs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), index=True, nullable=False)
+    operator_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    action = db.Column(db.String(64), nullable=False)
+    delta_days = db.Column(db.Integer, nullable=True)
+    note = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+
 

@@ -150,10 +150,12 @@ def _call_ai(payload: dict, language: str) -> dict:
     return {"notes": compact}
 
 
-def get_or_generate_tutor_notes(user_id: int) -> dict:
+def get_or_generate_tutor_notes(
+    user_id: int, *, language: str | None = None, refresh: bool = False
+) -> dict:
     today = _resolve_today()
     cached = TutorNote.query.filter_by(user_id=user_id, plan_date=today).first()
-    if cached:
+    if cached and not refresh and (not language or cached.language == language):
         return cached.payload
 
     user = db.session.get(User, user_id)
@@ -162,7 +164,12 @@ def get_or_generate_tutor_notes(user_id: int) -> dict:
 
     plan = get_or_generate_plan(user_id)
     plan_detail = plan.generated_detail or {}
-    language = _resolve_language(user.profile)
+    if language:
+        resolved_language = language
+    elif cached and cached.language:
+        resolved_language = cached.language
+    else:
+        resolved_language = _resolve_language(user.profile)
     sessions = (
         StudySession.query.filter_by(user_id=user_id)
         .order_by(StudySession.started_at.desc())
@@ -179,20 +186,24 @@ def get_or_generate_tutor_notes(user_id: int) -> dict:
         config_flag = current_app.config.get("AI_COACH_NOTES_ENABLE", True)
     if config_flag:
         try:
-            notes_payload = _call_ai(payload, language)
+            notes_payload = _call_ai(payload, resolved_language)
         except Exception as exc:  # pragma: no cover - defensive
             current_app.logger.warning("Tutor notes AI failed: %s", exc)
 
     if not notes_payload.get("notes"):
-        notes_payload = _fallback_notes(language, plan_detail, has_history)
+        notes_payload = _fallback_notes(resolved_language, plan_detail, has_history)
 
-    record = TutorNote(
-        user_id=user_id,
-        plan_date=today,
-        language=language,
-        payload=notes_payload,
-    )
-    db.session.add(record)
+    if not cached:
+        cached = TutorNote(
+            user_id=user_id,
+            plan_date=today,
+            language=resolved_language,
+            payload=notes_payload,
+        )
+        db.session.add(cached)
+    else:
+        cached.language = resolved_language
+        cached.payload = notes_payload
     db.session.commit()
     return notes_payload
 

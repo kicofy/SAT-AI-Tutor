@@ -36,4 +36,3 @@ if __name__ == "__main__":  # pragma: no cover
         host=os.getenv("HOST", "0.0.0.0"),
         port=_resolve_port(),
     )
-

@@ -1,13 +1,17 @@
 "use client";
 
-import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, type ReactNode, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import { DashboardCard } from "@/components/ui/dashboard-card";
 import { useI18n } from "@/hooks/use-i18n";
-import { generateExplain, getExplainDetail, getExplainHistory } from "@/services/ai-explain";
+import {
+  generateExplain,
+  getExplainDetail,
+  getExplainHistory,
+  type ExplainHistoryFilters,
+} from "@/services/ai-explain";
 import type {
-  ExplainHistoryFilters,
   ExplainHistoryItem,
   ExplainDetailResponse,
   ExplainHistoryResponse,
@@ -15,10 +19,14 @@ import type {
 import {
   ExplanationViewer,
   HighlightedText,
-  StepDirective,
+  type StepDirective,
+  type Translator,
 } from "@/components/practice/explanation-viewer";
 import type { SessionQuestion } from "@/types/session";
 import Link from "next/link";
+import { useAuthStore } from "@/stores/auth-store";
+import type { AiExplainQuota, MembershipStatus } from "@/types/auth";
+import { getQuestionDecorations } from "@/lib/question-decorations";
 
 const REFRESH_INTERVAL = 1000 * 30;
 
@@ -30,12 +38,28 @@ function AIExplainContent() {
   const { t } = useI18n();
   const [filters, setFilters] = useState<ExplainHistoryFilters>({
     page: 1,
-    per_page: 15,
+    perPage: 15,
   });
   const [selected, setSelected] = useState<ExplainHistoryItem | null>(null);
   const [activeDirectives, setActiveDirectives] = useState<StepDirective[]>([]);
   const [searchTerm, setSearchTerm] = useState(filters.search ?? "");
   const deferredSearch = useDeferredValue(searchTerm);
+  const authUser = useAuthStore((state) => state.user);
+  const updateAuthUser = useAuthStore((state) => state.updateUser);
+  const applyQuotaUpdate = useCallback(
+    (quota?: AiExplainQuota) => {
+      if (!quota || !authUser) return;
+      updateAuthUser({ ...authUser, ai_explain_quota: quota });
+    },
+    [authUser, updateAuthUser]
+  );
+  const membership = authUser?.membership;
+  const aiQuota = authUser?.ai_explain_quota;
+  const quotaLimit =
+    aiQuota?.limit === undefined ? null : aiQuota?.limit === null ? null : aiQuota.limit;
+  const quotaRemaining =
+    quotaLimit === null ? null : Math.max(quotaLimit - (aiQuota?.used ?? 0), 0);
+  const quotaExhausted = quotaLimit !== null && quotaRemaining !== null && quotaRemaining <= 0;
 
   useEffect(() => {
     setSearchTerm(filters.search ?? "");
@@ -78,10 +102,8 @@ function AIExplainContent() {
         : Promise.resolve(null),
     enabled: Boolean(selected),
     staleTime: 0,
-    cacheTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
-    keepPreviousData: false,
   });
   useEffect(() => {
     if (!detailQuery.error) return;
@@ -114,6 +136,7 @@ function AIExplainContent() {
           <h1 className="text-3xl font-semibold text-white">{t("aiExplain.title")}</h1>
           <p className="text-white/60 text-sm">{t("aiExplain.subtitle")}</p>
         </div>
+        <QuotaNotice quota={aiQuota} membership={membership} />
       </div>
 
       <div className="mt-6 grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
@@ -146,6 +169,8 @@ function AIExplainContent() {
             activeDirectives={activeDirectives}
             onDirectivesChange={setActiveDirectives}
             onRefreshDetail={detailQuery.refetch}
+            quotaExhausted={quotaExhausted}
+            onQuotaUpdate={applyQuotaUpdate}
           />
         </div>
       </div>
@@ -162,6 +187,8 @@ function ExplainDetailSurface({
   activeDirectives,
   onDirectivesChange,
   onRefreshDetail,
+  quotaExhausted,
+  onQuotaUpdate,
 }: {
   selected: ExplainHistoryItem | null;
   detail: ExplainDetailResponse | null;
@@ -171,8 +198,15 @@ function ExplainDetailSurface({
   activeDirectives: StepDirective[];
   onDirectivesChange: (directives: StepDirective[]) => void;
   onRefreshDetail: () => Promise<unknown>;
+  quotaExhausted: boolean;
+  onQuotaUpdate: (quota?: AiExplainQuota) => void;
 }) {
   const { t } = useI18n();
+  useEffect(() => {
+    if (detail?.quota) {
+      onQuotaUpdate(detail.quota as AiExplainQuota);
+    }
+  }, [detail?.quota, onQuotaUpdate]);
 
   if (!selected) {
     return (
@@ -211,6 +245,8 @@ function ExplainDetailSurface({
       activeDirectives={activeDirectives}
       onDirectivesChange={onDirectivesChange}
             onRefreshDetail={onRefreshDetail}
+      quotaExhausted={quotaExhausted}
+      onQuotaUpdate={onQuotaUpdate}
     />
   );
 }
@@ -221,14 +257,22 @@ function ExplainDetailPanel({
   activeDirectives,
   onDirectivesChange,
   onRefreshDetail,
+  quotaExhausted,
+  onQuotaUpdate,
 }: {
   detail: ExplainDetailResponse;
   onBack: () => void;
   activeDirectives: StepDirective[];
   onDirectivesChange: (directives: StepDirective[]) => void;
   onRefreshDetail: () => Promise<unknown>;
+  quotaExhausted: boolean;
+  onQuotaUpdate: (quota?: AiExplainQuota) => void;
 }) {
   const { t } = useI18n();
+  const translator = useMemo<Translator>(
+    () => ((key, params) => t(key as any, params as any)) as Translator,
+    [t]
+  );
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const question = detail.question as SessionQuestion;
@@ -236,6 +280,15 @@ function ExplainDetailPanel({
   const aiExplanation = detail.ai_explanation;
   const userValue = meta.user_answer?.value;
   const correctValue = meta.correct_answer?.value;
+
+  const questionDecorations = useMemo(
+    () => getQuestionDecorations(question),
+    [question]
+  );
+  const combinedDirectives = useMemo(
+    () => [...questionDecorations, ...activeDirectives],
+    [questionDecorations, activeDirectives]
+  );
 
   const sectionLabel = [meta.section, meta.sub_section].filter(Boolean).join(" · ");
   const skillLabel = meta.skill_tags?.slice(0, 2).join(" / ");
@@ -272,11 +325,21 @@ function ExplainDetailPanel({
     setGenerateError(null);
     setIsGenerating(true);
     try {
-      await generateExplain({ questionId: meta.question_id, logId: meta.log_id });
+      const response = await generateExplain({ questionId: meta.question_id, logId: meta.log_id });
+      onQuotaUpdate(response.quota as AiExplainQuota | undefined);
       await onRefreshDetail();
     } catch (err) {
-      const message = err instanceof Error ? err.message : t("aiExplain.detail.errorUnknown");
-      setGenerateError(message);
+      if (
+        err instanceof AxiosError &&
+        err.response?.status === 429 &&
+        err.response.data?.error === "ai_explain_quota_exceeded"
+      ) {
+        onQuotaUpdate(err.response.data.quota as AiExplainQuota | undefined);
+        setGenerateError(t("aiExplain.detail.quotaExceeded"));
+      } else {
+        const message = err instanceof Error ? err.message : t("aiExplain.detail.errorUnknown");
+        setGenerateError(message);
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -324,7 +387,7 @@ function ExplainDetailPanel({
             <p className="text-xs uppercase tracking-wide text-white/40">Passage</p>
             <HighlightedText
               text={question.passage.content_text}
-              directives={activeDirectives.filter((d) => d.target === "passage")}
+              directives={combinedDirectives.filter((d) => d.target === "passage")}
               className="rounded-2xl border border-white/5 bg-white/5 p-4 text-white/80"
             />
           </div>
@@ -333,7 +396,7 @@ function ExplainDetailPanel({
           <p className="text-xs uppercase tracking-wide text-white/40">Question</p>
           <HighlightedText
             text={question.stem_text}
-            directives={activeDirectives.filter((d) => d.target === "stem")}
+            directives={combinedDirectives.filter((d) => d.target === "stem")}
             className="text-white text-lg font-semibold"
           />
         </div>
@@ -355,7 +418,7 @@ function ExplainDetailPanel({
                 <span className="mr-3 font-semibold">{choiceKey}.</span>
                 <HighlightedText
                   text={text}
-                  directives={activeDirectives.filter(
+                  directives={combinedDirectives.filter(
                     (d) => d.target === "choices" && d.choice_id === choiceKey
                   )}
                   className="inline"
@@ -382,7 +445,7 @@ function ExplainDetailPanel({
         <ExplanationViewer
           explanation={aiExplanation}
           onDirectivesChange={onDirectivesChange}
-          t={t}
+          t={translator}
         />
       ) : (
         <div className="card-ambient space-y-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-center text-white/70">
@@ -391,14 +454,64 @@ function ExplainDetailPanel({
             type="button"
             className="btn-ghost px-4 py-2 text-sm"
             onClick={handleGenerate}
-            disabled={isGenerating}
+            disabled={isGenerating || quotaExhausted}
           >
             {isGenerating ? t("aiExplain.detail.generating") : t("aiExplain.detail.generate")}
           </button>
           {generateError && (
             <p className="text-xs text-rose-300">{generateError}</p>
           )}
+          {quotaExhausted && !generateError && (
+            <p className="text-xs text-amber-200">{t("aiExplain.detail.quotaExceeded")}</p>
+          )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function QuotaNotice({
+  quota,
+  membership,
+}: {
+  quota?: AiExplainQuota | null;
+  membership?: MembershipStatus | null;
+}) {
+  const { t } = useI18n();
+  if (!quota) {
+    return null;
+  }
+  if (quota.limit === null) {
+    return (
+      <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/5 px-4 py-2 text-sm text-emerald-100">
+        {t("aiExplain.quota.unlimited")}
+      </div>
+    );
+  }
+  const remaining = Math.max(quota.limit - (quota.used ?? 0), 0);
+  const resetsLabel = quota.resets_at
+    ? new Date(quota.resets_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : null;
+  return (
+    <div
+      className={`rounded-2xl border px-4 py-3 text-sm ${
+        remaining > 0
+          ? "border-white/15 bg-white/5 text-white/70"
+          : "border-amber-400/40 bg-amber-500/10 text-amber-100"
+      }`}
+    >
+      <p>
+        {remaining > 0
+          ? t("aiExplain.quota.remaining", { remaining, limit: quota.limit })
+          : t("aiExplain.quota.exhausted")}
+      </p>
+      {resetsLabel && (
+        <p className="text-xs text-white/40">{t("aiExplain.quota.resets", { time: resetsLabel })}</p>
+      )}
+      {remaining <= 0 && (
+        <Link href="/settings" className="btn-ghost mt-3 inline-flex items-center justify-center gap-2 px-3 py-1 text-xs">
+          {t("plan.locked.cta")}
+        </Link>
       )}
     </div>
   );

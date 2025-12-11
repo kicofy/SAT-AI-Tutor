@@ -1,4 +1,4 @@
-import { Home, LineChart, Sparkles, Layers, Settings, Shield } from "lucide-react";
+import { Home, LineChart, Sparkles, Layers, Settings, Shield, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { env } from "@/lib/env";
 import styles from "./sidebar.module.css";
@@ -13,6 +13,7 @@ const navItems = [
 ];
 
 const settingsNav = { key: "nav.settings" as const, href: "/settings", icon: Settings };
+const suggestionNav = { key: "nav.suggestions" as const, href: "/suggestions", icon: MessageSquare };
 const adminNav = { key: "nav.admin" as const, href: "/admin/panel", icon: Shield };
 
 export function Sidebar() {
@@ -36,6 +37,10 @@ export function Sidebar() {
         ))}
       </nav>
       <div className={styles.footerNav}>
+        <Link href={suggestionNav.href} className={styles.navItem}>
+          <suggestionNav.icon size={18} />
+          <span>{t(suggestionNav.key)}</span>
+        </Link>
         <Link href={settingsNav.href} className={styles.navItem}>
           <settingsNav.icon size={18} />
           <span>{t(settingsNav.key)}</span>

@@ -34,17 +34,18 @@ def upgrade():
 
     if "user_id" not in columns:
         op.add_column(table, sa.Column("user_id", sa.Integer(), nullable=True))
-        fk_name = "fk_email_verification_tickets_user_id"
-        existing_fks = [fk["name"] for fk in inspector.get_foreign_keys(table)]
-        if fk_name not in existing_fks:
-            op.create_foreign_key(
-                fk_name,
-                table,
-                "users",
-                ["user_id"],
-                ["id"],
-                ondelete="CASCADE",
-            )
+        if bind.dialect.name != "sqlite":
+            fk_name = "fk_email_verification_tickets_user_id"
+            existing_fks = [fk["name"] for fk in inspector.get_foreign_keys(table)]
+            if fk_name not in existing_fks:
+                op.create_foreign_key(
+                    fk_name,
+                    table,
+                    "users",
+                    ["user_id"],
+                    ["id"],
+                    ondelete="CASCADE",
+                )
 
 
 def downgrade():
@@ -56,8 +57,8 @@ def downgrade():
 
     columns = {col["name"] for col in inspector.get_columns(table)}
     if "user_id" in columns:
-        fk_name = "fk_email_verification_tickets_user_id"
         if bind.dialect.name != "sqlite":
+            fk_name = "fk_email_verification_tickets_user_id"
             constraints = [fk["name"] for fk in inspector.get_foreign_keys(table)]
             if fk_name in constraints:
                 op.drop_constraint(fk_name, table, type_="foreignkey")

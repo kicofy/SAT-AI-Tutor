@@ -45,6 +45,17 @@ class BaseConfig:
     PLAN_DEFAULT_MINUTES = int(os.getenv("PLAN_DEFAULT_MINUTES", "60"))
     PLAN_BLOCK_MINUTES = int(os.getenv("PLAN_BLOCK_MINUTES", "25"))
     PLAN_REVIEW_MINUTES = int(os.getenv("PLAN_REVIEW_MINUTES", "10"))
+    PLAN_MIN_PER_QUESTION = int(os.getenv("PLAN_MIN_PER_QUESTION", "5"))
+    PLAN_DEFAULT_QUESTIONS = int(os.getenv("PLAN_DEFAULT_QUESTIONS", "12"))
+    FREE_PLAN_TRIAL_DAYS = int(os.getenv("FREE_PLAN_TRIAL_DAYS", "7"))
+    AI_EXPLAIN_FREE_DAILY_LIMIT = int(os.getenv("AI_EXPLAIN_FREE_DAILY_LIMIT", "5"))
+    MEMBERSHIP_MONTHLY_PRICE_CENTS = int(os.getenv("MEMBERSHIP_MONTHLY_PRICE_CENTS", "3900"))
+    MEMBERSHIP_MONTHLY_DAYS = int(os.getenv("MEMBERSHIP_MONTHLY_DAYS", "30"))
+    MEMBERSHIP_QUARTERLY_PRICE_CENTS = int(
+        os.getenv("MEMBERSHIP_QUARTERLY_PRICE_CENTS", "9900")
+    )
+    MEMBERSHIP_QUARTERLY_DAYS = int(os.getenv("MEMBERSHIP_QUARTERLY_DAYS", "90"))
+    MEMBERSHIP_CURRENCY = os.getenv("MEMBERSHIP_CURRENCY", "USD")
     ANALYTICS_HISTORY_DAYS = int(os.getenv("ANALYTICS_HISTORY_DAYS", "30"))
     AI_DIAGNOSTIC_ENABLE = os.getenv("AI_DIAGNOSTIC_ENABLE", "true").lower() in {"1", "true", "yes"}
     AI_DIAGNOSTIC_MODEL = os.getenv("AI_DIAGNOSTIC_MODEL", "gpt-5.1")
@@ -68,6 +79,7 @@ class BaseConfig:
     ).lower() in {"1", "true", "yes"}
     PDF_INGEST_RESOLUTION = int(os.getenv("PDF_INGEST_RESOLUTION", "220"))
     PDF_INGEST_MAX_PAGES = int(os.getenv("PDF_INGEST_MAX_PAGES", "200"))
+    PDF_INGEST_MAX_WORKERS = int(os.getenv("PDF_INGEST_MAX_WORKERS", "1"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     RATE_LIMIT_DEFAULTS = [limit.strip() for limit in os.getenv("RATE_LIMIT_DEFAULTS", "200 per minute;1000 per day").split(";") if limit.strip()]
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
@@ -96,8 +108,13 @@ class BaseConfig:
     MAIL_IMAP_PORT = int(os.getenv("MAIL_IMAP_PORT", "993"))
     MAIL_IMAP_USE_SSL = os.getenv("MAIL_IMAP_USE_SSL", "true").lower() in {"1", "true", "yes"}
     PASSWORD_RESET_URL = os.getenv("PASSWORD_RESET_URL", "http://localhost:3000/auth/reset-password")
+    SQLITE_TIMEOUT_SEC = int(os.getenv("SQLITE_TIMEOUT_SEC", "15"))
+    SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "15000"))
     if SQLALCHEMY_DATABASE_URI.startswith("sqlite"):
-        SQLALCHEMY_ENGINE_OPTIONS = {"poolclass": NullPool}
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            "poolclass": NullPool,
+            "connect_args": {"timeout": SQLITE_TIMEOUT_SEC, "check_same_thread": False},
+        }
     else:
         SQLALCHEMY_ENGINE_OPTIONS = {
             "pool_pre_ping": True,

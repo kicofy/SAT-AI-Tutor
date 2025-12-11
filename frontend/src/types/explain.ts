@@ -1,4 +1,5 @@
 import type { SessionQuestion, QuestionAnswer } from "@/types/session";
+import type { AiExplainQuota } from "@/types/auth";
 import type { AnimExplanation } from "@/components/practice/explanation-viewer";
 
 export type ExplainHistoryItem = {
@@ -15,6 +16,7 @@ export type ExplainHistoryItem = {
   session_type?: string | null;
   plan_block_id?: string | null;
   attempt_count: number;
+  has_ai_explanation?: boolean;
 };
 
 export type ExplainHistoryResponse = {
@@ -49,8 +51,11 @@ export type ExplainDetailResponse = {
     plan_block_id?: string | null;
     source_label?: string | null;
     attempt_count?: number;
+    has_ai_explanation?: boolean;
+    explanation_language?: string;
   };
   text_explanation?: string | null;
   ai_explanation?: AnimExplanation | null;
+  quota?: AiExplainQuota;
 };
 

@@ -19,6 +19,7 @@ import {
   fetchDraftFigures,
   fetchOpenaiLogs,
   updateDraft,
+  resumeImportJob,
 } from "@/services/admin";
 import { useAuth } from "@/hooks/use-auth";
 import { extractErrorMessage } from "@/lib/errors";
@@ -45,9 +46,29 @@ type ImportJob = {
 };
 
 type DraftPayloadPreview = {
-  stem_text?: string;
+  stem_text?: string | null;
   has_figure?: boolean;
   section?: string | null;
+  sub_section?: string | null;
+  difficulty_level?: number | null;
+  correct_answer?: { value?: string | null } | null;
+  choices?:
+    | Record<string, string>
+    | Array<{ label?: string | null; text?: string | null; value?: string | null }>;
+  passage?:
+    | string
+    | {
+        content_text?: string | null;
+        metadata?: Record<string, unknown> | null;
+      }
+    | null;
+  skill_tags?: string[];
+  estimated_time_sec?: number | null;
+  irt_a?: number | null;
+  irt_b?: number | null;
+  source_page?: number | null;
+  page?: number | string | null;
+  index_in_set?: number | null;
   question_number?: string | number;
   original_question_number?: string | number;
   source_question_number?: string | number;
@@ -80,6 +101,8 @@ type FigureModalState = {
   selection: SelectionRect | null;
   zoom: number;
   loading: boolean;
+  kind: "main" | "choice";
+  choiceId?: string | null;
 };
 
 type DuplicatePromptState = {
@@ -129,11 +152,22 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
   const [draftActionMessage, setDraftActionMessage] = useState<string | null>(null);
   const [cancelJobId, setCancelJobId] = useState<number | null>(null);
   const [eventError, setEventError] = useState<string | null>(null);
+  const resumeMutation = useMutation({
+    mutationFn: (jobId: number) => resumeImportJob(jobId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-imports"] });
+      loadImports();
+    },
+  });
   const [figureState, setFigureState] = useState<Record<number, number>>({});
   const [figureModal, setFigureModal] = useState<FigureModalState | null>(null);
   const [figurePreviewUrl, setFigurePreviewUrl] = useState<string | null>(null);
   const [figureError, setFigureError] = useState<string | null>(null);
   const [figureSaving, setFigureSaving] = useState(false);
+  const [quickTestDraft, setQuickTestDraft] = useState<DraftPreview | null>(null);
+  const [quickTestSelection, setQuickTestSelection] = useState<string>("");
+  const [quickTestResult, setQuickTestResult] = useState<"correct" | "incorrect" | null>(null);
+  const [quickTestSubmitted, setQuickTestSubmitted] = useState(false);
   const [duplicatePrompt, setDuplicatePrompt] = useState<DuplicatePromptState | null>(null);
   const [duplicateConfirming, setDuplicateConfirming] = useState(false);
   const [openaiLogs, setOpenaiLogs] = useState<OpenAILogEntry[]>([]);
@@ -483,7 +517,7 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
   );
 
   const openFigureModal = useCallback(
-    async (draft: DraftPreview) => {
+    async (draft: DraftPreview, kind: "main" | "choice" = "main", choiceId?: string | null) => {
       setFigureError(null);
       resetPreview();
       setFigureModal({
@@ -491,15 +525,33 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
         selection: null,
         zoom: 1,
         loading: true,
+        kind,
+        choiceId,
       });
       try {
         const [source, figuresResponse] = await Promise.all([
           fetchDraftFigureSource(draft.id),
           fetchDraftFigures(draft.id).catch(() => ({ figures: [] })),
         ]);
-        const existingFigure = Array.isArray(figuresResponse?.figures)
-          ? figuresResponse.figures[0]
-          : undefined;
+        const figures = Array.isArray(figuresResponse?.figures) ? figuresResponse.figures : [];
+        const existingFigure =
+          kind === "choice"
+            ? (() => {
+                const cid = (choiceId || "").toLowerCase();
+                if (!cid) return undefined;
+                return figures.find((fig) =>
+                  typeof fig.description === "string"
+                    ? fig.description.toLowerCase().includes(`choice ${cid}`)
+                    : false
+                );
+              })()
+            : (() => {
+                const nonChoice = figures.find(
+                  (fig) =>
+                    !(typeof fig.description === "string" && fig.description.toLowerCase().includes("choice"))
+                );
+                return nonChoice || figures[0];
+              })();
         const existingSelection =
           existingFigure?.bbox &&
           typeof existingFigure.bbox === "object" &&
@@ -535,6 +587,17 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
     setFigureModal(null);
     setFigureError(null);
   }, [resetPreview]);
+
+  const openQuickTest = useCallback((draft: DraftPreview) => {
+    window.location.href = `/practice?preview=1&draftId=${draft.id}`;
+  }, []);
+
+  const closeQuickTest = useCallback(() => {
+    setQuickTestDraft(null);
+    setQuickTestSelection("");
+    setQuickTestResult(null);
+    setQuickTestSubmitted(false);
+  }, []);
 
   const handleSelectionChange = useCallback((rect: SelectionRect | null) => {
     setFigureModal((prev) => (prev ? { ...prev, selection: rect } : prev));
@@ -605,6 +668,10 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
       );
       const formData = new FormData();
       formData.append("image", file);
+      formData.append("kind", figureModal.kind);
+      if (figureModal.choiceId) {
+        formData.append("choice_id", figureModal.choiceId);
+      }
       formData.append(
         "bbox",
         JSON.stringify({
@@ -655,6 +722,16 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
     if (diffHr < 24) return `${diffHr}h ago`;
     const diffDay = Math.floor(diffHr / 24);
     return `${diffDay}d ago`;
+  };
+
+  const buildChoicesForDraft = (draft: DraftPreview) => {
+    const payload = draft.payload || {};
+    const base =
+      payload.choices && typeof payload.choices === "object" ? (payload.choices as Record<string, string>) : {};
+    const keys = Object.keys(base).length ? Object.keys(base) : ["A", "B", "C", "D"];
+    return keys
+      .filter((k) => base[k])
+      .map((k) => ({ key: k.toUpperCase(), text: base[k] }));
   };
 
   const formatAbsolute = (timestamp?: string | null) => {
@@ -845,6 +922,18 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
                           Error: {job.error_message}
                         </p>
                       )}
+                  {job.status?.toLowerCase() === "failed" && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="rounded-full border border-white/30 px-3 py-1 text-xs font-semibold text-white/80 hover:border-white/60 disabled:opacity-50"
+                        onClick={() => resumeMutation.mutate(job.id)}
+                        disabled={resumeMutation.isPending}
+                      >
+                        {resumeMutation.isPending ? "Resuming..." : "Resume"}
+                      </button>
+                    </div>
+                  )}
                     </div>
                   ))}
                 </div>
@@ -1039,8 +1128,12 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
             onSubmit={(payload) =>
               draftUpdateMutation.mutate({ draftId: selectedDraft.id, data: payload })
             }
-            isSaving={draftUpdateMutation.isLoading}
+            isSaving={draftUpdateMutation.isPending}
             error={draftUpdateMutation.error}
+            onCaptureChoiceFigure={(choiceId) =>
+              openFigureModal(selectedDraft, "choice", choiceId)
+            }
+            onTestDraft={() => openQuickTest(selectedDraft)}
           />
         ) : (
           <p className="text-sm text-white/60">
@@ -1068,7 +1161,9 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-base font-semibold text-white">
-                Capture figure · Draft #{figureModal.draft.id}
+                {figureModal.kind === "choice"
+                  ? `Capture option ${figureModal.choiceId || ""} · Draft #${figureModal.draft.id}`
+                  : `Capture figure · Draft #${figureModal.draft.id}`}
               </p>
               <p className="text-xs text-white/60">Page {figureModal.source?.page ?? "…"}</p>
             </div>
@@ -1219,6 +1314,95 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
       <>
         <AppShell>{workspaceCore}</AppShell>
         {figureModalOverlay}
+        {quickTestDraft && (
+          <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+            <div className="modal-panel flex max-h-[95vh] w-full max-w-3xl flex-col rounded-2xl bg-[#050E1F] shadow-2xl">
+              <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
+                <div>
+                  <p className="text-base font-semibold text-white">Quick test · Draft #{quickTestDraft.id}</p>
+                </div>
+                <button
+                  className="rounded-full border border-white/20 p-1 text-white/70 hover:text-white"
+                  onClick={closeQuickTest}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                {quickTestDraft.payload?.passage?.content_text ? (
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
+                    {quickTestDraft.payload.passage.content_text}
+                  </div>
+                ) : null}
+                <div className="text-white text-base font-semibold">
+                  {quickTestDraft.payload?.stem_text || "No stem"}
+                </div>
+                <div className="space-y-2">
+                  {buildChoicesForDraft(quickTestDraft).map((choice) => (
+                    <label
+                      key={choice.key}
+                      className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-white ${
+                        quickTestSelection === choice.key
+                          ? "border-white/50 bg-white/10"
+                          : "border-white/15 bg-white/5"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="quick-test-choice"
+                        className="mt-1"
+                        checked={quickTestSelection === choice.key}
+                        onChange={() => {
+                          setQuickTestSelection(choice.key);
+                          setQuickTestResult(null);
+                        }}
+                      />
+                      <div>
+                        <div className="text-xs uppercase text-white/60">Choice {choice.key}</div>
+                        <div className="text-sm text-white/90">{choice.text}</div>
+                      </div>
+                    </label>
+                  ))}
+                  {!buildChoicesForDraft(quickTestDraft).length && (
+                    <p className="text-sm text-white/60">No choices available.</p>
+                  )}
+                </div>
+                {quickTestSubmitted && (
+                  <div
+                    className={`rounded-xl px-3 py-2 text-sm ${
+                      quickTestResult === "correct"
+                        ? "bg-emerald-500/20 text-emerald-100"
+                        : "bg-rose-500/20 text-rose-100"
+                    }`}
+                  >
+                    {quickTestResult === "correct" ? "Correct" : "Incorrect"}
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end gap-3 border-t border-white/10 px-5 py-3">
+                <button
+                  className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80 hover:text-white"
+                  onClick={closeQuickTest}
+                >
+                  Close
+                </button>
+                <button
+                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-[#050E1F]"
+                  onClick={() => {
+                    setQuickTestSubmitted(true);
+                    const correct = (quickTestDraft.payload?.correct_answer?.value || "").toUpperCase().trim();
+                    setQuickTestResult(
+                      correct && quickTestSelection.toUpperCase() === correct ? "correct" : "incorrect"
+                    );
+                  }}
+                  disabled={!quickTestSelection}
+                >
+                  Submit
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {duplicateModalOverlay}
       </>
     );
@@ -1237,6 +1421,95 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
         {workspaceCore}
       </div>
       {figureModalOverlay}
+      {quickTestDraft && (
+        <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="modal-panel flex max-h-[95vh] w-full max-w-3xl flex-col rounded-2xl bg-[#050E1F] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
+              <div>
+                <p className="text-base font-semibold text-white">Quick test · Draft #{quickTestDraft.id}</p>
+              </div>
+              <button
+                className="rounded-full border border-white/20 p-1 text-white/70 hover:text-white"
+                onClick={closeQuickTest}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {quickTestDraft.payload?.passage?.content_text ? (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
+                  {quickTestDraft.payload.passage.content_text}
+                </div>
+              ) : null}
+              <div className="text-white text-base font-semibold">
+                {quickTestDraft.payload?.stem_text || "No stem"}
+              </div>
+              <div className="space-y-2">
+                {buildChoicesForDraft(quickTestDraft).map((choice) => (
+                  <label
+                    key={choice.key}
+                    className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-white ${
+                      quickTestSelection === choice.key
+                        ? "border-white/50 bg-white/10"
+                        : "border-white/15 bg-white/5"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="quick-test-choice"
+                      className="mt-1"
+                      checked={quickTestSelection === choice.key}
+                      onChange={() => {
+                        setQuickTestSelection(choice.key);
+                        setQuickTestResult(null);
+                      }}
+                    />
+                    <div>
+                      <div className="text-xs uppercase text-white/60">Choice {choice.key}</div>
+                      <div className="text-sm text-white/90">{choice.text}</div>
+                    </div>
+                  </label>
+                ))}
+                {!buildChoicesForDraft(quickTestDraft).length && (
+                  <p className="text-sm text-white/60">No choices available.</p>
+                )}
+              </div>
+              {quickTestSubmitted && (
+                <div
+                  className={`rounded-xl px-3 py-2 text-sm ${
+                    quickTestResult === "correct"
+                      ? "bg-emerald-500/20 text-emerald-100"
+                      : "bg-rose-500/20 text-rose-100"
+                  }`}
+                >
+                  {quickTestResult === "correct" ? "Correct" : "Incorrect"}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-3 border-t border-white/10 px-5 py-3">
+              <button
+                className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80 hover:text-white"
+                onClick={closeQuickTest}
+              >
+                Close
+              </button>
+              <button
+                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-[#050E1F]"
+                onClick={() => {
+                  setQuickTestSubmitted(true);
+                  const correct = (quickTestDraft.payload?.correct_answer?.value || "").toUpperCase().trim();
+                  setQuickTestResult(
+                    correct && quickTestSelection.toUpperCase() === correct ? "correct" : "incorrect"
+                  );
+                }}
+                disabled={!quickTestSelection}
+              >
+                Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {duplicateModalOverlay}
     </>
   );
@@ -1249,15 +1522,20 @@ type DraftEditorProps = {
   onSubmit: (payload: Partial<AdminQuestion>) => void;
   isSaving: boolean;
   error: unknown;
+  onCaptureChoiceFigure?: (choiceId: string) => void;
+  onTestDraft?: () => void;
 };
 
-function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
+function DraftEditor({ draft, onSubmit, isSaving, error, onCaptureChoiceFigure, onTestDraft }: DraftEditorProps) {
   const payload = draft.payload || {};
   const [stemText, setStemText] = useState(payload.stem_text ?? "");
   const [section, setSection] = useState(payload.section ?? "RW");
   const [subSection, setSubSection] = useState(payload.sub_section ?? "");
   const [difficulty, setDifficulty] = useState<number | "">(payload.difficulty_level ?? "");
   const [correctAnswer, setCorrectAnswer] = useState(payload.correct_answer?.value ?? "");
+  const [questionType, setQuestionType] = useState<"choice" | "fill">(
+    (payload.question_type as "choice" | "fill") || "choice"
+  );
   const [choices, setChoices] = useState<Record<string, string>>(
     Array.isArray(payload.choices)
       ? payload.choices.reduce<Record<string, string>>((acc, entry, index) => {
@@ -1277,13 +1555,23 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
       ? JSON.stringify(payload.passage.metadata, null, 2)
       : ""
   );
+  const [acceptableRaw, setAcceptableRaw] = useState(
+    Array.isArray(payload.answer_schema?.acceptable)
+      ? (payload.answer_schema?.acceptable as unknown[]).map((v) => String(v)).join(", ")
+      : ""
+  );
+  const [tolerance, setTolerance] = useState<number | "">(payload.answer_schema?.tolerance ?? "");
   const [skillTagsInput, setSkillTagsInput] = useState((payload.skill_tags || []).join(", "));
   const [estimatedTime, setEstimatedTime] = useState<number | "">(payload.estimated_time_sec ?? "");
   const [irtA, setIrtA] = useState<number | "">(payload.irt_a ?? "");
   const [irtB, setIrtB] = useState<number | "">(payload.irt_b ?? "");
-  const [pageRef, setPageRef] = useState<number | "">(
-    typeof payload.source_page === "number" ? payload.source_page : payload.page ?? ""
-  );
+  const initialPageRef =
+    typeof payload.source_page === "number"
+      ? payload.source_page
+      : typeof payload.page === "number"
+      ? payload.page
+      : "";
+  const [pageRef, setPageRef] = useState<number | "">(initialPageRef);
   const [indexInSet, setIndexInSet] = useState<number | "">(payload.index_in_set ?? "");
   const [metadataRaw, setMetadataRaw] = useState(
     payload.metadata ? JSON.stringify(payload.metadata, null, 2) : ""
@@ -1291,6 +1579,9 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
   const [hasFigure, setHasFigure] = useState(Boolean(payload.has_figure));
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [passageMetaError, setPassageMetaError] = useState<string | null>(null);
+  const [pagePreviewUrl, setPagePreviewUrl] = useState<string | null>(null);
+  const [pagePreviewLoading, setPagePreviewLoading] = useState(false);
+  const [pagePreviewError, setPagePreviewError] = useState<string | null>(null);
 
   useEffect(() => {
     const nextPayload = draft.payload || {};
@@ -1299,6 +1590,7 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
     setSubSection(nextPayload.sub_section ?? "");
     setDifficulty(nextPayload.difficulty_level ?? "");
     setCorrectAnswer(nextPayload.correct_answer?.value ?? "");
+    setQuestionType((nextPayload.question_type as "choice" | "fill") || "choice");
     setChoices(
       Array.isArray(nextPayload.choices)
         ? nextPayload.choices.reduce<Record<string, string>>((acc, entry, index) => {
@@ -1320,6 +1612,12 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
         ? JSON.stringify(nextPayload.passage.metadata, null, 2)
         : ""
     );
+    setAcceptableRaw(
+      Array.isArray(nextPayload.answer_schema?.acceptable)
+        ? (nextPayload.answer_schema?.acceptable as unknown[]).map((v) => String(v)).join(", ")
+        : ""
+    );
+    setTolerance(nextPayload.answer_schema?.tolerance ?? "");
     setSkillTagsInput((nextPayload.skill_tags || []).join(", "));
     setEstimatedTime(nextPayload.estimated_time_sec ?? "");
     setIrtA(nextPayload.irt_a ?? "");
@@ -1327,14 +1625,42 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
     setPageRef(
       typeof nextPayload.source_page === "number"
         ? nextPayload.source_page
-        : nextPayload.page ?? ""
+        : typeof nextPayload.page === "number"
+        ? nextPayload.page
+        : ""
     );
     setIndexInSet(nextPayload.index_in_set ?? "");
     setMetadataRaw(nextPayload.metadata ? JSON.stringify(nextPayload.metadata, null, 2) : "");
     setHasFigure(Boolean(nextPayload.has_figure));
     setMetadataError(null);
     setPassageMetaError(null);
+        setPagePreviewUrl(null);
+        setPagePreviewError(null);
+        setPagePreviewLoading(false);
   }, [draft]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPagePreviewLoading(true);
+    setPagePreviewError(null);
+    fetchDraftFigureSource(draft.id)
+      .then((preview) => {
+        if (cancelled) return;
+        const img = preview.image?.startsWith("data:") ? preview.image : `data:image/png;base64,${preview.image}`;
+        setPagePreviewUrl(img);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPagePreviewError(extractErrorMessage(err, "Failed to load PDF page"));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setPagePreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.id]);
 
   const choiceKeys = useMemo(() => {
     const keys = Object.keys(choices);
@@ -1382,9 +1708,10 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
           stem_text: stemText,
           section,
           sub_section: subSection || null,
+          question_type: questionType,
           difficulty_level: difficulty === "" ? null : Number(difficulty),
           correct_answer: { value: correctAnswer },
-          choices,
+          choices: questionType === "choice" ? choices : {},
           skill_tags: skillTags,
           estimated_time_sec: estimatedTime === "" ? null : Number(estimatedTime),
           irt_a: irtA === "" ? null : Number(irtA),
@@ -1403,6 +1730,18 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
           };
         }
 
+        if (questionType === "fill") {
+          const acceptable = acceptableRaw
+            .split(",")
+            .map((v) => v.trim())
+            .filter(Boolean);
+          payload.answer_schema = {
+            type: "numeric",
+            acceptable,
+            tolerance: tolerance === "" ? null : Number(tolerance),
+          } as unknown as Record<string, unknown>;
+        }
+
         onSubmit(payload);
       }}
     >
@@ -1416,6 +1755,13 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
         ) : (
           <span className="chip-soft bg-emerald-500/20 text-emerald-100">No figure</span>
         )}
+        <button
+          type="button"
+          className="chip-soft border border-white/20 bg-white/5 px-3 py-1 text-white hover:bg-white/10"
+          onClick={() => onTestDraft?.()}
+        >
+          Test this draft
+        </button>
       </div>
       <label className="text-sm text-white/70 block">
         Question text
@@ -1458,6 +1804,41 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
           />
         </label>
       </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <label className="text-sm text-white/70">
+          Question type
+          <select
+            className="mt-1 w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-white"
+            value={questionType}
+            onChange={(e) => setQuestionType(e.target.value as "choice" | "fill")}
+          >
+            <option value="choice">Choice</option>
+            <option value="fill">Fill-in</option>
+          </select>
+        </label>
+        {questionType === "fill" && (
+          <>
+            <label className="text-sm text-white/70">
+              Acceptable answers (comma-separated)
+              <input
+                className="mt-1 w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-white"
+                placeholder="3.5, 7/2"
+                value={acceptableRaw}
+                onChange={(e) => setAcceptableRaw(e.target.value)}
+              />
+            </label>
+            <label className="text-sm text-white/70">
+              Tolerance (optional)
+              <input
+                className="mt-1 w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-white"
+                placeholder="0.01"
+                value={tolerance}
+                onChange={(e) => setTolerance(e.target.value ? Number(e.target.value) : "")}
+              />
+            </label>
+          </>
+        )}
+      </div>
       <label className="text-sm text-white/70 block">
         Skill tags
         <input
@@ -1467,32 +1848,72 @@ function DraftEditor({ draft, onSubmit, isSaving, error }: DraftEditorProps) {
           onChange={(e) => setSkillTagsInput(e.target.value)}
         />
       </label>
-      <div className="grid gap-3 sm:grid-cols-2">
-        {choiceKeys.map((key) => (
-          <label key={key} className="text-sm text-white/70">
-            Choice {key}
+      {questionType === "choice" && (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {choiceKeys.map((key) => (
+              <div key={key} className="text-sm text-white/70 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span>Choice {key}</span>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded-full border border-white/20 px-2 py-1 text-xs text-white/80 hover:text-white"
+                      onClick={() => onCaptureChoiceFigure?.(key)}
+                    >
+                      Capture option image
+                    </button>
+                  </div>
+                </div>
+                <input
+                  className="w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-white"
+                  value={choices[key] ?? ""}
+                  onChange={(e) =>
+                    setChoices((prev) => ({
+                      ...prev,
+                      [key]: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+            ))}
+          </div>
+          <label className="text-sm text-white/70 block">
+            Correct answer
             <input
               className="mt-1 w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-white"
-              value={choices[key] ?? ""}
-              onChange={(e) =>
-                setChoices((prev) => ({
-                  ...prev,
-                  [key]: e.target.value,
-                }))
-              }
+              placeholder="A"
+              value={correctAnswer}
+              onChange={(e) => setCorrectAnswer(e.target.value.trim().toUpperCase())}
             />
           </label>
-        ))}
-      </div>
-      <label className="text-sm text-white/70 block">
-        Correct answer
-        <input
-          className="mt-1 w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-white"
-          placeholder="A"
-          value={correctAnswer}
-          onChange={(e) => setCorrectAnswer(e.target.value.trim().toUpperCase())}
-        />
-      </label>
+        </>
+      )}
+      {questionType === "fill" && (
+        <label className="text-sm text-white/70 block">
+          Reference answer (display)
+          <input
+            className="mt-1 w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-white"
+            placeholder="3.5"
+            value={correctAnswer}
+            onChange={(e) => setCorrectAnswer(e.target.value)}
+          />
+        </label>
+      )}
+      {pagePreviewLoading && <p className="text-xs text-white/60">Loading PDF page…</p>}
+      {pagePreviewError && <p className="text-xs text-rose-300">{pagePreviewError}</p>}
+      {pagePreviewUrl && (
+        <div className="space-y-2">
+          <p className="text-xs uppercase text-white/50">PDF page preview</p>
+          <div className="overflow-auto rounded-2xl border border-white/10 bg-[#050E1F]/60 p-2">
+            <img
+              src={pagePreviewUrl}
+              alt="PDF page preview"
+              className="mx-auto max-h-[520px] w-auto rounded-xl border border-white/10 object-contain"
+            />
+          </div>
+        </div>
+      )}
       <label className="text-sm text-white/70 block">
         Passage text (optional)
         <textarea

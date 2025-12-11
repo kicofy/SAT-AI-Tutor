@@ -33,13 +33,17 @@ class QuestionCreateSchema(Schema):
     irt_a = fields.Float(allow_none=True)
     irt_b = fields.Float(allow_none=True)
     skill_tags = fields.List(fields.String())
-    estimated_time_sec = fields.Integer()
+    estimated_time_sec = fields.Integer(allow_none=True, load_default=None)
+    question_type = fields.String(load_default="choice")
+    answer_schema = fields.Dict(load_default=None)
     source = fields.String()
     source_page = fields.Integer(allow_none=True, load_default=None)
-    page = fields.String()
-    index_in_set = fields.Integer()
+    page = fields.String(allow_none=True, load_default=None)
+    index_in_set = fields.Integer(allow_none=True, load_default=None)
     metadata = fields.Dict(attribute="metadata_json", data_key="metadata", load_default=None)
     has_figure = fields.Boolean(load_default=False)
+    # Optional hint from ingestion: which choices require a figure/table capture.
+    choice_figure_keys = fields.List(fields.String(), load_default=list)
     source_id = fields.Integer(load_default=None, allow_none=True)
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sat_app.extensions import db
-from sat_app.models import StudyPlan, User, UserProfile
+from sat_app.models import StudyPlan, User, UserProfile, DiagnosticAttempt
 from sat_app.utils.security import hash_password
 
 
@@ -14,8 +14,21 @@ def _create_student(email: str) -> int:
         password_hash=hash_password("StrongPass123!"),
         role="student",
     )
-    user.profile = UserProfile(daily_available_minutes=60, language_preference="en")
+    user.profile = UserProfile(
+        daily_available_minutes=60,
+        daily_plan_questions=12,
+        language_preference="en",
+    )
     db.session.add(user)
+    db.session.commit()
+    db.session.add(
+        DiagnosticAttempt(
+            user_id=user.id,
+            status="skipped",
+            total_questions=0,
+            result_summary={"status": "skipped"},
+        )
+    )
     db.session.commit()
     return user.id
 

@@ -41,8 +41,10 @@ export async function listPlanTasks(): Promise<PlanTask[]> {
   return data.tasks;
 }
 
-export async function getTutorNotes(): Promise<TutorNotesResponse> {
-  const { data } = await api.get<TutorNotesResponse>("/api/learning/tutor-notes/today");
+export async function getTutorNotes(params?: { lang?: string }): Promise<TutorNotesResponse> {
+  const { data } = await api.get<TutorNotesResponse>("/api/learning/tutor-notes/today", {
+    params,
+  });
   return data;
 }
 

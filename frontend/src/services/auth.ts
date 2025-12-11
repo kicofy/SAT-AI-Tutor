@@ -11,6 +11,7 @@ type RegisterPayload = {
   password: string;
   username: string;
   languagePreference?: "en" | "zh";
+  dailyPlanQuestions?: number;
 };
 
 export async function login(payload: LoginPayload): Promise<AuthResponse> {
@@ -26,6 +27,7 @@ export async function register(payload: RegisterPayload & { code: string }): Pro
     code: payload.code,
     profile: {
       daily_available_minutes: 60,
+      daily_plan_questions: payload.dailyPlanQuestions ?? 12,
       language_preference: payload.languagePreference === "zh" ? "zh" : "en",
     },
   };
@@ -40,12 +42,16 @@ export async function fetchProfile(): Promise<User> {
 
 type UpdateProfilePayload = {
   languagePreference?: "en" | "zh" | "bilingual";
+  dailyPlanQuestions?: number;
 };
 
 export async function updateProfileSettings(payload: UpdateProfilePayload): Promise<User> {
-  const body: Record<string, string> = {};
+  const body: Record<string, string | number> = {};
   if (payload.languagePreference) {
     body.language_preference = payload.languagePreference;
+  }
+  if (typeof payload.dailyPlanQuestions === "number") {
+    body.daily_plan_questions = payload.dailyPlanQuestions;
   }
   const { data } = await api.patch<{ user: User }>("/api/auth/profile", body);
   return data.user;

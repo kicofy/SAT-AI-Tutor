@@ -78,6 +78,11 @@ def send_email(
         for key, value in headers.items():
             msg[key] = value
     msg["Message-ID"] = make_msgid(domain=from_email.split("@")[-1] if from_email else None)
+    if "X-Mailer" not in msg:
+        agent = config.get("MAIL_HEADER_AGENT", "SAT-AI-Tutor Mailer")
+        msg["X-Mailer"] = agent
+    if "X-Entity-Ref-ID" not in msg:
+        msg["X-Entity-Ref-ID"] = msg["Message-ID"]
 
     plain_body = text or (_html_to_text(html) if html else "")
     msg.set_content(plain_body or " ")

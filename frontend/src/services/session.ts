@@ -38,13 +38,13 @@ export async function abortSession(sessionId: number | undefined): Promise<void>
 export async function fetchExplanation(params: {
   session_id: number;
   question_id: number;
-}): Promise<ExplanationResponse["explanation"]> {
+}): Promise<ExplanationResponse> {
   const { data } = await api.post<ExplanationResponse>(
     "/api/learning/session/explanation",
     params,
     { timeout: 60_000 }
   );
-  return data.explanation;
+  return data;
 }
 
 export async function getActiveSession(): Promise<Session | null> {

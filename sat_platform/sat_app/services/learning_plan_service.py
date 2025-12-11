@@ -419,9 +419,20 @@ def generate_daily_plan(user_id: int, plan_date: date | None = None) -> StudyPla
     profile = user.profile
 
     language = _resolve_language(profile)
+    minutes_per_question = current_app.config.get("PLAN_MIN_PER_QUESTION", 5)
+    default_questions = current_app.config.get("PLAN_DEFAULT_QUESTIONS", 12)
+    plan_question_pref = getattr(profile, "daily_plan_questions", None) if profile else None
     masteries = get_mastery_snapshot(user_id)
-    base_minutes = profile.daily_available_minutes if profile else current_app.config.get("PLAN_DEFAULT_MINUTES", 60)
-    total_minutes = _adjust_minutes_for_history(user_id, base_minutes, today)
+    if plan_question_pref:
+        base_minutes = max(plan_question_pref * minutes_per_question, minutes_per_question)
+        total_minutes = base_minutes
+    else:
+        base_minutes = (
+            profile.daily_available_minutes
+            if profile
+            else current_app.config.get("PLAN_DEFAULT_MINUTES", 60)
+        )
+        total_minutes = _adjust_minutes_for_history(user_id, base_minutes, today)
     section_split = _estimate_section_split(profile)
     blocks, summary = _build_blocks_v2(user_id, total_minutes, masteries, section_split, today, language)
     target_questions = summary["total_questions"]
@@ -499,7 +510,7 @@ def start_plan_task(user_id: int, block_id: str) -> Tuple[StudySession, dict]:
         _ensure_session_question_target(session, task, block)
         return session, serialize_task(task)
 
-    questions = _select_questions_for_block(user_id, block)
+    questions = _select_questions_for_block(user_id, block, plan.plan_date, block.get("block_id"))
     if not questions:
         raise BadRequest("No questions available for this block")
 
@@ -649,17 +660,44 @@ def _find_task_by_block(user_id: int, block_id: str, plan_date: date | None = No
     return query.first()
 
 
-def _select_questions_for_block(user_id: int, block: dict) -> List:
+def _collect_plan_question_ids(
+    user_id: int,
+    plan_date: date,
+    exclude_block_id: str | None = None,
+) -> set[int]:
+    question_ids: set[int] = set()
+    tasks = StudyPlanTask.query.filter_by(user_id=user_id, plan_date=plan_date).all()
+    for task in tasks:
+        if exclude_block_id and task.block_id == exclude_block_id:
+            continue
+        session = task.session
+        if not session:
+            continue
+        for assigned in session.questions_assigned or []:
+            question_id = assigned.get("question_id")
+            if question_id:
+                question_ids.add(int(question_id))
+    return question_ids
+
+
+def _select_questions_for_block(
+    user_id: int,
+    block: dict,
+    plan_date: date,
+    block_id: str | None,
+) -> List:
     section = _normalize_section(block.get("section"))
     focus_skill = block.get("focus_skill")
     num_questions = block.get("questions") or 5
     from . import session_service  # local import to avoid circular dependency
 
+    exclude_ids = _collect_plan_question_ids(user_id, plan_date, block_id)
     return session_service.select_questions(
         user_id=user_id,
         num_questions=num_questions,
         section=section,
         focus_skill=focus_skill,
+        exclude_ids=exclude_ids,
     )
 
 

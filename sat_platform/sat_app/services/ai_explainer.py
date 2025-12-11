@@ -97,6 +97,12 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         },
         ensure_ascii=False,
     )
+    math_guidelines = (
+        "- If this is a Math item, use clear LaTeX-style notation for fractions \\frac{a}{b}, powers x^{2}, roots \\sqrt{x}, and \\pi.\n"
+        "- For fill-in (SPR) math items, list acceptable equivalent forms (fractions/decimals/pi) in answer_forms; keep the main explanation consistent with the official key.\n"
+        "- If choices contain images/graphs, reference them by option letter (e.g., \"see option B graph\")—do NOT invent unseen details.\n"
+        "- Keep each formula concise; show the key transformation steps and a quick check/substitution if applicable.\n"
+    )
     system_prompt = (
         "You are an elite SAT tutor who provides animated explanations.\n"
         "Respond with **pure JSON** matching the schema shown below. Do not add markdown or commentary.\n"
@@ -126,6 +132,7 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         "- When highlighting text from the passage/stem, quote enough surrounding words so the snippet is unique. Avoid vague markers such as “this sentence”.\n"
         "- Before striking or eliminating a choice, explicitly verify it against the passage logic so the cue explains the precise defect (missing conjunction, shifts meaning, etc.).\n"
         "- If figures are provided, interpret them directly (they are attached as images). When an animation focuses on a figure, set target to \"figure\", provide a short `text` describing the region (e.g., '1998 Beaumont bar'), set `figure_id` to the provided numeric ID, and explain how that visual supports or eliminates a choice. Mix figure-focused steps with textual steps.\n"
+        f"{math_guidelines}"
     )
     if language_tag == "zh":
         system_prompt += (
@@ -138,6 +145,8 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
             "\nUse these images when reasoning about the question. Reference them in animations via "
             "`target: \"figure\"` and provide the matching `figure_id` so the UI knows which chart to highlight."
         )
+    question_type = getattr(question, "question_type", "choice") or "choice"
+    answer_schema = getattr(question, "answer_schema", None)
     passage_text = None
     if getattr(question, "passage", None) and getattr(question.passage, "content_text", None):
         passage_text = question.passage.content_text
@@ -156,6 +165,8 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         f"Choices: {json.dumps(question.choices, ensure_ascii=False)}\n"
         f"Correct answer: {json.dumps(question.correct_answer, ensure_ascii=False)}\n"
         f"User answer: {json.dumps(user_answer, ensure_ascii=False)}\n"
+        f"Question type: {question_type}\n"
+        f"Answer schema (if fill): {json.dumps(answer_schema, ensure_ascii=False)}\n"
         f"Section: {question.section}\n"
         f"Skill tags: {question.skill_tags}\n"
         f"Depth request: {depth}\n"
@@ -193,6 +204,10 @@ def _validate_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+class AiExplainerError(Exception):
+    """Raised when the AI explainer cannot return a valid payload."""
+
+
 def generate_explanation(question, user_answer, user_language: str = "bilingual", depth: str = "standard"):
     app = current_app
     if not app.config.get("AI_EXPLAINER_ENABLE", False):
@@ -210,6 +225,9 @@ def generate_explanation(question, user_answer, user_language: str = "bilingual"
     messages = _build_messages(question, user_answer, user_language, depth, figures)
     raw = client.chat(messages)
     content = raw["choices"][0]["message"]["content"]
-    payload = json.loads(content)
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+        raise AiExplainerError(f"Invalid JSON from explainer: {content[:200]}") from exc
     return _validate_payload(payload)
 

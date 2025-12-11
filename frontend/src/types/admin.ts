@@ -1,4 +1,4 @@
-import { UserProfile } from "@/types/auth";
+import { UserProfile, MembershipStatus, AiExplainQuota } from "@/types/auth";
 import { QuestionFigureRef } from "@/types/session";
 
 export type Pagination = {
@@ -26,6 +26,8 @@ export type AdminUser = {
   locked_at?: string | null;
   created_at?: string | null;
   profile?: UserProfile | null;
+  membership?: MembershipStatus;
+  ai_explain_quota?: AiExplainQuota;
 };
 
 export type UserLearningSnapshot = {
@@ -100,5 +102,54 @@ export type AdminSourceDetail = {
   source: AdminSource;
   questions: AdminQuestion[];
   pagination: Pagination;
+};
+
+export type GeneralSettings = {
+  suggestion_email?: string | null;
+};
+
+export type QuestionCategory = {
+  key: string;
+  label: string;
+  domain: string;
+  question_count: number;
+  section_counts?: Record<string, number>;
+};
+
+export type AIPaperJob = {
+  id: number;
+  name: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "cancelling";
+  stage?: string | null;
+  stage_index?: number | null;
+  progress: number;
+  total_tasks: number;
+  completed_tasks: number;
+  config: Record<string, unknown>;
+  status_message?: string | null;
+  error?: string | null;
+  source_id?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type OpenAILogEntry = {
+  timestamp: string;
+  kind: string;
+  job_id?: number | null;
+  stage?: string | null;
+  purpose?: string | null;
+  page?: number | null;
+  total_pages?: number | null;
+  attempt?: number | null;
+  max_attempts?: number | null;
+  wait_seconds?: number | null;
+  normalized_count?: number | null;
+  status_code?: number | null;
+  duration_ms?: number | null;
+  model?: string | null;
+  error?: string | null;
+  message?: string | null;
+  state?: string | null;
 };
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { AuthResponse, RegisterResponse, User } from "@/types/auth";
+import { AuthResponse, User } from "@/types/auth";
 import { clearToken, saveToken } from "@/lib/auth-storage";
 import * as AuthService from "@/services/auth";
 import { extractErrorMessage } from "@/lib/errors";

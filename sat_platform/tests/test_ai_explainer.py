@@ -87,6 +87,7 @@ def test_ai_explain_detail_does_not_generate(client, student_token, question_id,
     payload = resp.get_json()
     assert payload["ai_explanation"] is None
     assert payload["meta"]["has_ai_explanation"] is False
+    assert payload["meta"]["explanation_language"] == "en"
     assert called["count"] == 0
 
 
@@ -119,4 +120,5 @@ def test_ai_explain_generate_then_detail(client, student_token, question_id, mon
         headers={"Authorization": f"Bearer {student_token}"},
     ).get_json()
     assert detail["ai_explanation"]["protocol_version"] == "1.0"
+    assert detail["meta"]["has_ai_explanation"] is True
 

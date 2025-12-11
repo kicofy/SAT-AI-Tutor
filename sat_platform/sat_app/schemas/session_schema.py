@@ -8,6 +8,7 @@ from marshmallow import Schema, fields, validate
 class SessionStartSchema(Schema):
     num_questions = fields.Integer(load_default=10, validate=validate.Range(min=1, max=50))
     section = fields.String(load_default=None)
+    source_id = fields.Integer(load_default=None, allow_none=True)
 
 
 class SessionAnswerSchema(Schema):

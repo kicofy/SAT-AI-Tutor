@@ -7,7 +7,7 @@ from .question import (
     QuestionExplanationCache,
     QuestionFigure,
 )
-from .user import User, UserProfile, EmailVerificationTicket
+from .user import User, UserProfile, EmailVerificationTicket, UserSubscriptionLog
 from .learning import (
     StudySession,
     UserQuestionLog,
@@ -22,6 +22,9 @@ from .learning import (
 from .tutor_notes import TutorNote
 from .sources import QuestionSource
 from .imports import QuestionImportJob, QuestionDraft
+from .general_settings import GeneralSetting
+from .membership import MembershipOrder
+from .ai_generation import AIPaperJob
 
 __all__ = [
     "User",
@@ -45,5 +48,8 @@ __all__ = [
     "QuestionSource",
     "QuestionImportJob",
     "QuestionDraft",
+    "GeneralSetting",
+    "MembershipOrder",
+    "AIPaperJob",
 ]
 

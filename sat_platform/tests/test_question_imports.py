@@ -165,6 +165,33 @@ def test_delete_draft(client, admin_token, mock_parser):
         assert QuestionDraft.query.count() == 0
 
 
+def test_delete_draft_removes_source_when_empty(client, admin_token, mock_pdf_ingest):
+    payload = io.BytesIO(b"%PDF-1.4 cleanup-source")
+    resp = client.post(
+        "/api/admin/questions/ingest-pdf",
+        data={"file": (payload, "cleanup.pdf")},
+        headers={"Authorization": f"Bearer {admin_token}"},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 202
+    job = resp.get_json()["job"]
+    source_id = job["source_id"]
+    with client.application.app_context():
+        draft = QuestionDraft.query.filter_by(source_id=source_id).first()
+        assert draft is not None
+        draft_id = draft.id
+    delete_resp = client.delete(
+        f"/api/admin/questions/drafts/{draft_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert delete_resp.status_code == 204
+    with client.application.app_context():
+        assert db.session.get(QuestionSource, source_id) is None
+        job_ref = db.session.get(QuestionImportJob, job["id"])
+        assert job_ref is not None
+        assert job_ref.source_id is None
+
+
 def test_publish_draft(client, admin_token, mock_parser):
     draft_id = _create_manual_draft(client, admin_token)
     resp = client.post(
@@ -314,6 +341,52 @@ def test_publish_moves_uploaded_figure(client, admin_token, tmp_path):
         assert figure.question_id == question_id
 
 
+def test_bulk_delete_questions_endpoint(client, admin_token, app_with_db):
+    with app_with_db.app_context():
+        question = Question(
+            section="RW",
+            stem_text="Delete me",
+            choices={"A": "Alpha"},
+            correct_answer={"value": "A"},
+        )
+        db.session.add(question)
+        db.session.commit()
+        question_id = question.id
+
+    resp = client.post(
+        "/api/admin/questions/bulk-delete",
+        json={"ids": [question_id]},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["count"] == 1
+    assert question_id in payload["deleted"]
+    with app_with_db.app_context():
+        assert db.session.get(Question, question_id) is None
+
+
+def test_delete_source_endpoint(client, admin_token, app_with_db):
+    with app_with_db.app_context():
+        source = QuestionSource(
+            filename="empty.pdf",
+            original_name="empty.pdf",
+            stored_path="/tmp/empty.pdf",
+            uploaded_by=1,
+        )
+        db.session.add(source)
+        db.session.commit()
+        source_id = source.id
+
+    resp = client.delete(
+        f"/api/admin/sources/{source_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 204
+    with app_with_db.app_context():
+        assert db.session.get(QuestionSource, source_id) is None
+
+
 def test_source_deleted_when_questions_removed(client, admin_token):
     with client.application.app_context():
         admin = User.query.filter_by(role="admin").first()
@@ -362,7 +435,7 @@ def test_source_deleted_when_questions_removed(client, admin_token):
     QuestionDraft.query.filter_by(source_id=source.id).delete()
     db.session.commit()
 
-    question_service._delete_source_if_unused(source.id)
+    question_service.cleanup_source_if_unused(source.id)
     db.session.commit()
 
     assert db.session.get(QuestionSource, source.id) is None

@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from sat_app.extensions import db
-from sat_app.models import Question, StudySession
+from sat_app.models import Question, StudySession, QuestionExplanationCache
+from sat_app.services import question_explanation_service
 
 
 @pytest.fixture()
@@ -131,9 +132,62 @@ def test_student_can_answer_question(client, seeded_question, student_token, mon
     assert explanation_again["protocol_version"] == "1.0"
     assert calls["count"] == 1
     with client.application.app_context():
+        cache = QuestionExplanationCache.query.filter_by(
+            question_id=question_entry["question_id"]
+        ).first()
+        assert cache is not None
+    with client.application.app_context():
         question = db.session.get(Question, question_entry["question_id"])
         stats = question.metadata_json.get("difficulty_stats")
         assert stats["total_attempts"] == 1
+
+
+def test_cached_explanations_reused(client, app_with_db, seeded_question, student_token, monkeypatch):
+    calls = {"count": 0}
+
+    def _fake_generate(*args, **kwargs):
+        calls["count"] += 1
+        return {
+            "protocol_version": "1.0",
+            "question_id": seeded_question,
+            "answer_correct": True,
+            "language": "bilingual",
+            "summary": "cached",
+            "steps": [],
+        }
+
+    monkeypatch.setattr("sat_app.services.ai_explainer.generate_explanation", _fake_generate)
+    with app_with_db.app_context():
+        for question in Question.query.all():
+            question_explanation_service.ensure_explanation(
+                question=question,
+                language="en",
+                source="test",
+            )
+    initial_calls = calls["count"]
+
+    start = client.post(
+        "/api/learning/session/start",
+        json={"num_questions": 1},
+        headers={"Authorization": f"Bearer {student_token}"},
+    ).get_json()["session"]
+    question_entry = start["questions_assigned"][0]
+    client.post(
+        "/api/learning/session/answer",
+        json={
+            "session_id": start["id"],
+            "question_id": question_entry["question_id"],
+            "user_answer": {"value": "A"},
+        },
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    resp = client.post(
+        "/api/learning/session/explanation",
+        json={"session_id": start["id"], "question_id": question_entry["question_id"]},
+        headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert resp.status_code == 200
+    assert calls["count"] == initial_calls
 
 
 def test_mastery_endpoint_returns_snapshot(client, seeded_question, student_token, monkeypatch):

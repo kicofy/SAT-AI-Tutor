@@ -1,4 +1,5 @@
 import { api } from "@/lib/http";
+import type { AiExplainQuota } from "@/types/auth";
 import type {
   ExplainDetailResponse,
   ExplainHistoryItem,
@@ -57,12 +58,15 @@ export async function getExplainDetail(payload: {
 export async function generateExplain(payload: {
   questionId: number;
   logId?: number | null;
-}) {
+}): Promise<{ explanation: unknown; quota?: AiExplainQuota }> {
   const body = {
     question_id: payload.questionId,
     log_id: payload.logId,
   };
-  const { data } = await api.post<{ explanation: unknown }>("/api/ai/explain/generate", body);
-  return data.explanation;
+  const { data } = await api.post<{ explanation: unknown; quota?: AiExplainQuota }>(
+    "/api/ai/explain/generate",
+    body
+  );
+  return data;
 }
 

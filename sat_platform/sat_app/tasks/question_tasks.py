@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from datetime import datetime, timezone
+
+from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
 from ..models import QuestionImportJob, QuestionDraft
@@ -22,23 +25,55 @@ def _save_draft(job: QuestionImportJob, payload: dict) -> None:
     job_event_broker.publish({"type": "draft", "payload": draft.serialize()})
 
 
-def process_job(job_id: int) -> QuestionImportJob:
+def _commit_with_retry(attempts: int = 5, base_delay: float = 0.2) -> None:
+    """Commit with simple backoff to reduce SQLite 'database is locked' errors."""
+    for attempt in range(attempts):
+        try:
+            db.session.commit()
+            return
+        except OperationalError as exc:
+            # SQLite lock message commonly contains "database is locked"
+            if "locked" not in str(exc).lower():
+                raise
+            db.session.rollback()
+            time.sleep(base_delay * (attempt + 1))
+    # final attempt
+    db.session.commit()
+
+
+def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     job = db.session.get(QuestionImportJob, job_id)
     if not job:
         raise ValueError(f"Job {job_id} not found")
+    # Resume-aware: keep existing drafts and continue from next page
+    existing_drafts = list(job.drafts)
+    base_questions = len(existing_drafts)
+    max_page_done = 0
+    for draft in existing_drafts:
+        try:
+            payload_page = draft.payload.get("source_page") or draft.payload.get("page")
+            if payload_page is not None:
+                max_page_done = max(max_page_done, int(payload_page))
+        except Exception:
+            continue
+
     job.status = "processing"
     job.error_message = None
-    job.processed_pages = 0
-    job.total_pages = 0
-    job.parsed_questions = 0
-    job.current_page = 0
-    job.status_message = "Initializing ingestion"
+    job.processed_pages = max_page_done
+    job.total_pages = job.total_pages or 0
+    job.parsed_questions = base_questions
+    job.current_page = max_page_done
+    job.status_message = (
+        "Initializing ingestion"
+        if max_page_done == 0
+        else f"Resuming from page {max_page_done + 1}"
+    )
     job.last_progress_at = datetime.now(timezone.utc)
-    db.session.commit()
+    _commit_with_retry()
     job_event_broker.publish({"type": "job", "payload": job.serialize()})
     try:
         if job.ingest_strategy == "vision_pdf":
-            saved_questions = {"count": 0}
+            saved_questions = {"count": base_questions}
 
             def _progress(page_idx: int, total_pages: int, normalized_count: int, message: str | None = None) -> None:
                 job.processed_pages = page_idx
@@ -50,7 +85,7 @@ def process_job(job_id: int) -> QuestionImportJob:
                 if message:
                     job.status_message = message
                 job.last_progress_at = datetime.now(timezone.utc)
-                db.session.commit()
+                _commit_with_retry()
                 job_event_broker.publish({"type": "job", "payload": job.serialize()})
 
             def _on_question(payload: dict) -> None:
@@ -62,6 +97,10 @@ def process_job(job_id: int) -> QuestionImportJob:
                 progress_cb=_progress,
                 question_cb=_on_question,
                 job_id=job.id,
+                cancel_event=cancel_event,
+                start_page=max_page_done + 1,
+                base_pages_completed=max_page_done,
+                base_questions=base_questions,
             )
             job.total_blocks = saved_questions["count"]
         else:
@@ -74,7 +113,7 @@ def process_job(job_id: int) -> QuestionImportJob:
                 job.current_page = index
                 job.status_message = f"Normalized block {index}/{len(blocks)}"
                 job.last_progress_at = datetime.now(timezone.utc)
-                db.session.commit()
+                _commit_with_retry()
                 job_event_broker.publish({"type": "job", "payload": job.serialize()})
         job.status = "completed"
         job.status_message = "Completed"
@@ -85,7 +124,7 @@ def process_job(job_id: int) -> QuestionImportJob:
         job.status_message = f"Failed: {exc}"
     finally:
         job.last_progress_at = datetime.now(timezone.utc)
-        db.session.commit()
+        _commit_with_retry()
         job_event_broker.publish({"type": "job", "payload": job.serialize()})
     return job
 

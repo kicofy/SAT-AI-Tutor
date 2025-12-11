@@ -7,7 +7,9 @@ from time import sleep
 from typing import List, Optional, Dict, Iterable
 
 from sqlalchemy.exc import OperationalError
+from sqlalchemy import or_
 from flask import current_app, url_for
+import re
 from sqlalchemy.orm.attributes import flag_modified
 
 from ..extensions import db
@@ -45,27 +47,50 @@ def select_questions(
     num_questions: int,
     section: str | None = None,
     focus_skill: str | None = None,
+    exclude_ids: Optional[Iterable[int]] = None,
+    source_id: int | None = None,
 ) -> List[Question]:
+    excluded_set = {int(qid) for qid in (exclude_ids or [])}
+    if source_id:
+        query = Question.query.filter_by(source_id=source_id)
+        if section:
+            query = query.filter_by(section=section)
+        pool = [q for q in query.order_by(Question.id.asc()).all() if q.id not in excluded_set]
+        # Admin “test this collection” expects all questions in the collection, not a sample.
+        return pool
+
     last_summary = get_last_session_summary(user_id)
-    questions = adaptive_engine.select_next_questions(
+    initial = adaptive_engine.select_next_questions(
         user_id=user_id,
         num_questions=num_questions,
         section=section,
         focus_skill=focus_skill,
         last_summary=last_summary,
     )
-    if questions:
-        return questions
+    filtered: List[Question] = [q for q in initial if q.id not in excluded_set]
+    if len(filtered) >= num_questions:
+        return filtered[:num_questions]
+
+    needed = num_questions - len(filtered)
+    used_ids = {q.id for q in filtered}.union(excluded_set)
+
     query = Question.query
     if section:
         query = query.filter_by(section=section)
     if focus_skill:
-        fallback = query.order_by(db.func.random()).all()
+        filtered_query = query.filter(Question.skill_tags.contains([focus_skill]))
+        fallback = [q for q in filtered_query.order_by(db.func.random()).all() if q.id not in used_ids]
+        if not fallback:
+            fallback = [q for q in query.order_by(db.func.random()).all() if q.id not in used_ids]
         prioritized = [q for q in fallback if focus_skill in (q.skill_tags or [])]
         prioritized.extend([q for q in fallback if focus_skill not in (q.skill_tags or [])])
-        return _round_robin_by_difficulty(prioritized, num_questions)
-    fallback = query.order_by(db.func.random()).all()
-    return _round_robin_by_difficulty(fallback, num_questions)
+        extras = _round_robin_by_difficulty(prioritized, needed)
+    else:
+        fallback = [q for q in query.order_by(db.func.random()).all() if q.id not in used_ids]
+        extras = _round_robin_by_difficulty(fallback, needed)
+
+    filtered.extend(extras)
+    return filtered[:num_questions]
 
 
 def create_session(
@@ -100,8 +125,77 @@ def create_session(
     return session
 
 
+def _eval_choice_answer(question: Question, user_answer: dict) -> bool:
+    return user_answer == question.correct_answer
+
+
+def _parse_numeric(value: str):
+    raw = value.strip().replace(" ", "")
+    if not raw:
+        return None
+    # simple fraction support
+    if "/" in raw and all(part.replace(".", "", 1).lstrip("-").isdigit() for part in raw.split("/", 1)):
+        try:
+            num, den = raw.split("/", 1)
+            return float(num) / float(den)
+        except Exception:
+            return None
+    try:
+        return float(raw)
+    except Exception:
+        return None
+
+
+def _eval_fill_answer(question: Question, user_answer: dict) -> bool:
+    schema = getattr(question, "answer_schema", {}) or {}
+    if not isinstance(schema, dict):
+        schema = {}
+    acceptable = schema.get("acceptable") or []
+    if not acceptable:
+        return False
+    user_val = (user_answer or {}).get("value")
+    if user_val is None:
+        return False
+    user_raw = str(user_val).strip()
+    if not user_raw:
+        return False
+    ans_type = schema.get("type") or "text"
+    if ans_type == "numeric":
+        tol = schema.get("tolerance")
+        # Build numeric set from acceptable
+        targets = []
+        for acc in acceptable:
+            parsed = _parse_numeric(str(acc))
+            if parsed is not None:
+                targets.append(parsed)
+        user_num = _parse_numeric(user_raw)
+        if user_num is None or not targets:
+            return False
+        for target in targets:
+            if tol is not None:
+                try:
+                    tol_f = float(tol)
+                except Exception:
+                    tol_f = None
+                if tol_f is not None and abs(user_num - target) <= tol_f:
+                    return True
+            if user_num == target:
+                return True
+        return False
+    else:
+        # textual strict match (case-insensitive, trim)
+        for acc in acceptable:
+            if user_raw.lower() == str(acc).strip().lower():
+                return True
+        return False
+
+
 def log_answer(session: StudySession, question: Question, payload: dict, user_id: int) -> UserQuestionLog:
-    is_correct = payload["user_answer"] == question.correct_answer
+    qtype = getattr(question, "question_type", "choice") or "choice"
+    if qtype == "fill":
+        is_correct = _eval_fill_answer(question, payload.get("user_answer") or {})
+    else:
+        is_correct = _eval_choice_answer(question, payload.get("user_answer") or {})
     log = UserQuestionLog(
         user_id=user_id,
         study_session_id=session.id,
@@ -185,9 +279,15 @@ def _serialize_question(question: Question) -> dict:
         "question_uid": getattr(question, "question_uid", None),
         "section": question.section,
         "stem_text": question.stem_text,
+        "question_type": getattr(question, "question_type", "choice") or "choice",
         "choices": question.choices,
         "skill_tags": question.skill_tags or [],
     }
+    if getattr(question, "answer_schema", None):
+        payload["answer_schema"] = question.answer_schema
+    metadata = getattr(question, "metadata_json", None)
+    if metadata:
+        payload["metadata"] = metadata
     if question.correct_answer is not None:
         payload["correct_answer"] = question.correct_answer
     if question.sub_section:
@@ -204,7 +304,8 @@ def _serialize_question(question: Question) -> dict:
     payload["has_figure"] = bool(getattr(question, "has_figure", False))
     figure_query = getattr(question, "figures", None)
     figures = []
-    if figure_query is not None and payload["has_figure"]:
+    choice_figures: dict[str, dict] = {}
+    if figure_query is not None:
         try:
             figure_list = figure_query.all()
         except Exception:  # pragma: no cover - defensive fallback
@@ -212,20 +313,27 @@ def _serialize_question(question: Question) -> dict:
         for figure in figure_list:
             if not getattr(figure, "image_path", None):
                 continue
-            figures.append(
-                {
-                    "id": figure.id,
-                    "description": figure.description,
-                    "bbox": figure.bbox,
-                    "url": url_for(
-                        "learning_bp.get_question_figure_image",
-                        figure_id=figure.id,
-                        _external=False,
-                    ),
-                }
-            )
+            ref = {
+                "id": figure.id,
+                "description": figure.description,
+                "bbox": figure.bbox,
+                "url": url_for(
+                    "learning_bp.get_question_figure_image",
+                    figure_id=figure.id,
+                    _external=False,
+                ),
+            }
+            figures.append(ref)
+            desc = (figure.description or "").lower()
+            match = re.search(r"choice\s+([a-d])", desc)
+            if match:
+                key = match.group(1).upper()
+                choice_figures[key] = ref
     if figures:
         payload["figures"] = figures
+        payload["has_figure"] = True
+    if choice_figures:
+        payload["choice_figures"] = choice_figures
     return payload
 
 
@@ -329,6 +437,10 @@ def _select_replacement_question(
         query = query.filter(Question.section == section)
     if sub_section:
         query = query.filter(Question.sub_section == sub_section)
+    if skill_tags:
+        conditions = [Question.skill_tags.contains([tag]) for tag in skill_tags if tag]
+        if conditions:
+            query = query.filter(or_(*conditions))
     if exclude_ids:
         query = query.filter(~Question.id.in_(exclude_ids))
     candidates = query.order_by(db.func.random()).limit(10).all()

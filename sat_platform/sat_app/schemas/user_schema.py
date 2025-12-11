@@ -13,6 +13,9 @@ class UserProfileSchema(Schema):
     target_score_math = fields.Integer(allow_none=True)
     exam_date = fields.Date(allow_none=True)
     daily_available_minutes = fields.Integer(validate=validate.Range(min=10, max=600))
+    daily_plan_questions = fields.Integer(
+        allow_none=True, validate=validate.Range(min=4, max=40)
+    )
     language_preference = fields.String(validate=validate.OneOf(LANG_CHOICES))
 
 
@@ -20,7 +23,9 @@ class RegisterSchema(Schema):
     email = fields.Email(required=True)
     password = fields.String(required=True, validate=validate.Length(min=8))
     username = fields.String(validate=validate.Length(min=3, max=64))
-    code = fields.String(required=True, validate=validate.Length(equal=6))
+    code = fields.String(
+        required=False, validate=validate.Length(equal=6), allow_none=True, load_default=None
+    )
     profile = fields.Nested(UserProfileSchema, load_default=dict)
 
     class Meta:
@@ -56,10 +61,23 @@ class UserSchema(Schema):
     locked_at = fields.DateTime(dump_only=True)
     created_at = fields.DateTime(dump_only=True)
     profile = fields.Nested(PublicUserProfileSchema, dump_only=True)
+    membership = fields.Method("get_membership", dump_only=True)
+    ai_explain_quota = fields.Method("get_ai_quota", dump_only=True)
+
+    def get_membership(self, user):
+        from ..services import membership_service
+
+        return membership_service.describe_membership(user)
+
+    def get_ai_quota(self, user):
+        from ..services import membership_service
+
+        return membership_service.describe_ai_quota(user)
 
 
 class UpdateProfileSchema(Schema):
     language_preference = fields.String(validate=validate.OneOf(LANG_CHOICES))
+    daily_plan_questions = fields.Integer(validate=validate.Range(min=4, max=40))
 
 
 class PasswordChangeSchema(Schema):

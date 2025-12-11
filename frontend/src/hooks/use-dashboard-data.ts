@@ -8,12 +8,21 @@ import { getDiagnosticStatus } from "@/services/diagnostic";
 
 export function useDashboardData() {
   const userId = useAuthStore((state) => state.user?.id);
+  const membership = useAuthStore((state) => state.user?.membership);
   const diagnosticQuery = useQuery({
     queryKey: ["diagnostic-status", userId],
     queryFn: getDiagnosticStatus,
     enabled: Boolean(userId),
   });
-  const canLoadPlan = Boolean(userId) && diagnosticQuery.status === "success" && !diagnosticQuery.data?.requires_diagnostic;
+  const planAllowed =
+    membership === undefined || membership === null
+      ? true
+      : Boolean(membership.is_member || membership.trial_active);
+  const canLoadPlan =
+    Boolean(userId) &&
+    planAllowed &&
+    diagnosticQuery.status === "success" &&
+    !diagnosticQuery.data?.requires_diagnostic;
   const planQuery = useQuery({
     queryKey: ["plan-today", userId],
     queryFn: getTodayPlan,
@@ -32,9 +41,13 @@ export function useDashboardData() {
     enabled: Boolean(userId),
   });
 
+  const languagePref = useAuthStore(
+    (state) =>
+      state.user?.profile?.language_preference?.toLowerCase().includes("zh") ? "zh" : "en"
+  );
   const tutorNotesQuery = useQuery({
-    queryKey: ["tutor-notes", userId],
-    queryFn: getTutorNotes,
+    queryKey: ["tutor-notes", userId, languagePref],
+    queryFn: () => getTutorNotes({ lang: languagePref }),
     enabled: canLoadPlan,
   });
 

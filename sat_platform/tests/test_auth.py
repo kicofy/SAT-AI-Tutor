@@ -17,6 +17,7 @@ def test_register_creates_user_and_profile(client):
         "username": "student_one",
         "profile": {
             "daily_available_minutes": 90,
+            "daily_plan_questions": 18,
             "language_preference": "en",
         },
     }
@@ -26,6 +27,7 @@ def test_register_creates_user_and_profile(client):
     data = resp.get_json()
     assert data["user"]["email"] == "student@example.com"
     assert data["user"]["profile"]["daily_available_minutes"] == 90
+    assert data["user"]["profile"]["daily_plan_questions"] == 18
     assert data["user"]["profile"]["language_preference"] == "en"
 
 
@@ -160,6 +162,22 @@ def test_update_profile_changes_language(client):
     data = resp.get_json()["user"]
     assert data["email"] == "update@example.com"
     assert data["profile"]["language_preference"] == "zh"
+
+
+def test_update_profile_allows_plan_questions(client):
+    payload = {"email": "planpref@example.com", "password": "StrongPass123!", "code": _request_registration_code(client, "planpref@example.com")}
+    register = client.post("/api/auth/register", json=payload)
+    token = register.get_json()["access_token"]
+    resp = client.patch(
+        "/api/auth/profile",
+        json={"daily_plan_questions": 16},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    profile = resp.get_json()["user"]["profile"]
+    minutes_per_question = client.application.config.get("PLAN_MIN_PER_QUESTION", 5)
+    assert profile["daily_plan_questions"] == 16
+    assert profile["daily_available_minutes"] == 16 * minutes_per_question
 
 
 def test_change_password_requires_current_password(client):

@@ -21,6 +21,9 @@ export type SessionQuestion = {
   question_uid?: string;
   stem_text: string;
   choices: Record<string, string>;
+  question_type?: "choice" | "fill";
+  answer_schema?: Record<string, unknown>;
+  choice_figures?: Record<string, QuestionFigureRef>;
   section: string;
   sub_section?: string | null;
   passage?: QuestionPassage | null;
@@ -30,6 +33,7 @@ export type SessionQuestion = {
   skill_tags?: string[];
   unavailable_reason?: string;
   diagnostic_skill?: string;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type SessionProgressEntry = {
@@ -56,6 +60,7 @@ export type Session = {
 export type StartSessionPayload = {
   num_questions: number;
   section?: string;
+  source_id?: number;
 };
 
 export type AnswerPayload = {
@@ -70,7 +75,10 @@ export type AnswerResponse = {
   log_id: number;
 };
 
+import type { AiExplainQuota } from "@/types/auth";
+
 export type ExplanationResponse = {
   explanation: Record<string, unknown>;
+  quota?: AiExplainQuota;
 };
 

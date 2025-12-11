@@ -27,6 +27,7 @@ def list_questions(
     question_uid: Optional[str] = None,
     question_id: Optional[int] = None,
     source_id: Optional[int] = None,
+    skill_tag: Optional[str] = None,
 ):
     query = Question.query.options(joinedload(Question.passage), joinedload(Question.source))
     if section:
@@ -37,6 +38,8 @@ def list_questions(
         query = query.filter(Question.question_uid.ilike(f"%{question_uid.strip()}%"))
     if source_id:
         query = query.filter(Question.source_id == source_id)
+    if skill_tag:
+        query = query.filter(Question.skill_tags.contains([skill_tag]))
     return query.order_by(Question.created_at.desc()).paginate(page=page, per_page=per_page)
 
 
@@ -65,14 +68,24 @@ def create_or_get_passage(passage_payload: dict | None) -> Passage | None:
     return passage
 
 
-def create_question(payload: dict) -> Question:
+def create_question(payload: dict, *, commit: bool = True) -> Question:
     passage_payload = payload.pop("passage", None)
+    metadata_payload = None
+    if "metadata_json" in payload:
+        metadata_payload = payload.pop("metadata_json")
+    elif "metadata" in payload:
+        metadata_payload = payload.pop("metadata")
     passage = create_or_get_passage(passage_payload)
+    if metadata_payload is not None:
+        payload["metadata_json"] = metadata_payload
     question = Question(**payload)
     if passage is not None:
         question.passage_id = passage.id
     db.session.add(question)
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
     return question
 
 
@@ -87,7 +100,7 @@ def update_question(question: Question, payload: dict) -> Question:
     return question
 
 
-def delete_question(question: Question) -> None:
+def delete_question(question: Question, *, commit: bool = True) -> None:
     source_id = question.source_id
     UserQuestionLog.query.filter_by(question_id=question.id).delete(synchronize_session=False)
     QuestionReview.query.filter_by(question_id=question.id).delete(synchronize_session=False)
@@ -96,8 +109,9 @@ def delete_question(question: Question) -> None:
     db.session.delete(question)
     db.session.flush()
     if source_id:
-        _delete_source_if_unused(source_id)
-    db.session.commit()
+        cleanup_source_if_unused(source_id)
+    if commit:
+        db.session.commit()
 
 
 def _delete_source_if_unused(source_id: int) -> None:
@@ -114,4 +128,9 @@ def _delete_source_if_unused(source_id: int) -> None:
         {"source_id": None}, synchronize_session=False
     )
     db.session.delete(source)
+
+
+def cleanup_source_if_unused(source_id: int) -> None:
+    """Public helper to prune question sources with no references left."""
+    _delete_source_if_unused(source_id)
 

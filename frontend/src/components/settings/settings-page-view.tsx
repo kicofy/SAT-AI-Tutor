@@ -1,19 +1,27 @@
 "use client";
 
-import { FormEvent, MouseEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAuthStore } from "@/stores/auth-store";
 import * as AuthService from "@/services/auth";
+import { createMembershipOrder, listMembershipOrders } from "@/services/membership";
 import { extractErrorMessage } from "@/lib/errors";
 import { AppShell } from "@/components/layout/app-shell";
+import type { MembershipOrder } from "@/types/membership";
 
 type StatusState = {
   state: "idle" | "loading" | "success" | "error";
   message?: string;
 };
 
-const languageOptions: Array<{ value: "en" | "zh" | "bilingual"; labelKey: string }> = [
+type LanguageLabelKey =
+  | "settings.language.option.en"
+  | "settings.language.option.zh"
+  | "settings.language.option.bilingual";
+
+const languageOptions: Array<{ value: "en" | "zh" | "bilingual"; labelKey: LanguageLabelKey }> = [
   { value: "en", labelKey: "settings.language.option.en" },
   { value: "zh", labelKey: "settings.language.option.zh" },
   { value: "bilingual", labelKey: "settings.language.option.bilingual" },
@@ -23,12 +31,18 @@ export function SettingsPageView() {
   const { t } = useI18n();
   const user = useAuthStore((state) => state.user);
   const updateUser = useAuthStore((state) => state.updateUser);
+  const userId = user?.id;
+  const lastUserIdRef = useRef<number | null>(null);
 
+  const planRange = { min: 4, max: 40 };
   const [language, setLanguage] = useState<"en" | "zh" | "bilingual">("en");
+  const [planQuestions, setPlanQuestions] = useState<number>(12);
   const [langStatus, setLangStatus] = useState<StatusState>({ state: "idle" });
+  const [planStatus, setPlanStatus] = useState<StatusState>({ state: "idle" });
   const [passwordStatus, setPasswordStatus] = useState<StatusState>({ state: "idle" });
   const [emailSendStatus, setEmailSendStatus] = useState<StatusState>({ state: "idle" });
   const [emailVerifyStatus, setEmailVerifyStatus] = useState<StatusState>({ state: "idle" });
+  const [membershipOrderStatus, setMembershipOrderStatus] = useState<StatusState>({ state: "idle" });
   const [newEmail, setNewEmail] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
   const [hasSentCode, setHasSentCode] = useState(false);
@@ -38,17 +52,44 @@ export function SettingsPageView() {
   const [confirmPassword, setConfirmPassword] = useState("");
 
   const languagePreference = useMemo(() => normalizeLanguage(user?.profile?.language_preference), [user]);
+  const planPreference = useMemo(() => user?.profile?.daily_plan_questions ?? 12, [user]);
+  const membership = user?.membership;
+  const membershipStatusText = useMemo(() => {
+    if (membership?.is_member) {
+      if (!membership.expires_at) {
+        return t("settings.membership.status.permanent");
+      }
+      const dateLabel = new Date(membership.expires_at).toLocaleDateString();
+      return t("settings.membership.status.active", { date: dateLabel });
+    }
+    if (membership?.trial_active) {
+      return t("settings.membership.status.trial", {
+        days: membership.trial_days_remaining ?? 0,
+      });
+    }
+    return t("settings.membership.status.none");
+  }, [membership, t]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      lastUserIdRef.current = null;
+      return;
+    }
+    const isNewUser = lastUserIdRef.current !== user.id;
     setLanguage(languagePreference);
-    setNewEmail("");
-    setVerificationCode("");
-    setHasSentCode(false);
-    setSendCooldown(0);
-    setEmailSendStatus({ state: "idle" });
-    setEmailVerifyStatus({ state: "idle" });
-  }, [user, languagePreference]);
+    setPlanQuestions(planPreference);
+    if (isNewUser) {
+      setPlanStatus({ state: "idle" });
+      setLangStatus({ state: "idle" });
+      setEmailSendStatus({ state: "idle" });
+      setEmailVerifyStatus({ state: "idle" });
+      setNewEmail("");
+      setVerificationCode("");
+      setHasSentCode(false);
+      setSendCooldown(0);
+    }
+    lastUserIdRef.current = user.id;
+  }, [user, languagePreference, planPreference]);
 
   useEffect(() => {
     if (sendCooldown <= 0) return;
@@ -58,20 +99,62 @@ export function SettingsPageView() {
     return () => clearTimeout(timer);
   }, [sendCooldown]);
 
+  useEffect(() => {
+    if (planStatus.state !== "success") return;
+    const timeout = setTimeout(() => {
+      setPlanStatus({ state: "idle" });
+    }, 2000);
+    return () => clearTimeout(timeout);
+  }, [planStatus.state]);
+
+  useEffect(() => {
+    if (langStatus.state !== "success") return;
+    const timeout = setTimeout(() => {
+      setLangStatus({ state: "idle" });
+    }, 2000);
+    return () => clearTimeout(timeout);
+  }, [langStatus.state]);
+
   const loadingFallback = (
     <div className="col-span-full mx-auto w-full max-w-4xl px-4 py-20 text-center text-white/60">
       {t("ai.loading")}
     </div>
   );
 
-  if (!user) {
-    return <AppShell>{loadingFallback}</AppShell>;
-  }
+  const ordersQuery = useQuery({
+    queryKey: ["membership-orders", userId],
+    queryFn: () => listMembershipOrders(),
+    enabled: Boolean(userId),
+  });
+  const createOrderMutation = useMutation({
+    mutationFn: (plan: "monthly" | "quarterly") => createMembershipOrder(plan),
+    onSuccess: () => {
+      setMembershipOrderStatus({
+        state: "success",
+        message: t("settings.membership.orderSuccess"),
+      });
+      ordersQuery.refetch();
+    },
+    onError: (error: unknown) => {
+      setMembershipOrderStatus({
+        state: "error",
+        message: extractErrorMessage(error, t("settings.error.generic")),
+      });
+    },
+  });
+  const hasPendingOrder = useMemo(
+    () => (ordersQuery.data ?? []).some((order) => order.status === "pending"),
+    [ordersQuery.data]
+  );
 
   const isLangLoading = langStatus.state === "loading";
   const isSendLoading = emailSendStatus.state === "loading";
   const isVerifyLoading = emailVerifyStatus.state === "loading";
   const isPasswordLoading = passwordStatus.state === "loading";
+
+  if (!user) {
+    return <AppShell>{loadingFallback}</AppShell>;
+  }
 
   async function handleLanguageSave(event: FormEvent) {
     event.preventDefault();
@@ -82,6 +165,23 @@ export function SettingsPageView() {
       setLangStatus({ state: "success", message: t("settings.language.success") });
     } catch (error) {
       setLangStatus({
+        state: "error",
+        message: extractErrorMessage(error, t("settings.error.generic")),
+      });
+    }
+  }
+
+  async function handlePlanSave(event: FormEvent) {
+    event.preventDefault();
+    setPlanStatus({ state: "loading" });
+    try {
+      const sanitized = Math.min(planRange.max, Math.max(planRange.min, Math.round(planQuestions)));
+      const updated = await AuthService.updateProfileSettings({ dailyPlanQuestions: sanitized });
+      updateUser(updated);
+      setPlanQuestions(updated.profile?.daily_plan_questions ?? sanitized);
+      setPlanStatus({ state: "success", message: t("settings.plan.success") });
+    } catch (error) {
+      setPlanStatus({
         state: "error",
         message: extractErrorMessage(error, t("settings.error.generic")),
       });
@@ -167,6 +267,26 @@ export function SettingsPageView() {
     }
   }
 
+  function formatOrderPrice(order: MembershipOrder) {
+    try {
+      const currency = order.currency || "USD";
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency,
+      }).format((order.price_cents ?? 0) / 100);
+    } catch {
+      return `$${(order.price_cents ?? 0) / 100}`;
+    }
+  }
+
+  function handleCreateOrder(plan: "monthly" | "quarterly") {
+    if (hasPendingOrder && !window.confirm(t("settings.membership.pendingConfirm"))) {
+      return;
+    }
+    setMembershipOrderStatus({ state: "loading" });
+    createOrderMutation.mutate(plan);
+  }
+
   return (
     <AppShell>
       <div className="col-span-full mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 py-8 text-white">
@@ -184,6 +304,137 @@ export function SettingsPageView() {
             <p className="text-sm text-white/60">{t("settings.page.subtitle")}</p>
           </div>
         </div>
+
+        <section className="card-ambient space-y-5 rounded-3xl border border-white/10 bg-[#0b1424] p-6">
+          <SectionHeader
+            title={t("settings.membership.title")}
+            description={t("settings.membership.description")}
+          />
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/80">
+            <p>{membershipStatusText}</p>
+            {hasPendingOrder ? (
+              <p className="mt-1 text-xs text-amber-200">{t("settings.membership.pendingNotice")}</p>
+            ) : null}
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <button
+              type="button"
+              className="card-ambient flex flex-col gap-2 rounded-2xl border border-white/15 bg-gradient-to-br from-white/10 to-transparent p-4 text-left transition hover:border-white/40 disabled:opacity-50"
+              onClick={() => handleCreateOrder("monthly")}
+              disabled={createOrderMutation.isPending}
+            >
+              <div className="text-xs uppercase tracking-wide text-white/50">
+                {t("settings.membership.monthly.badge")}
+              </div>
+              <div className="text-2xl font-semibold text-white">
+                {t("settings.membership.monthly.price")}
+              </div>
+              <p className="text-sm text-white/70">{t("settings.membership.monthly.description")}</p>
+              <span className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-white/80">
+                {t("settings.membership.subscribe")}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="card-ambient flex flex-col gap-2 rounded-2xl border border-white/15 bg-gradient-to-br from-emerald-500/10 to-transparent p-4 text-left transition hover:border-emerald-300/40 disabled:opacity-50"
+              onClick={() => handleCreateOrder("quarterly")}
+              disabled={createOrderMutation.isPending}
+            >
+              <div className="text-xs uppercase tracking-wide text-emerald-200">
+                {t("settings.membership.quarterly.badge")}
+              </div>
+              <div className="text-2xl font-semibold text-white">
+                {t("settings.membership.quarterly.price")}
+              </div>
+              <p className="text-sm text-white/70">{t("settings.membership.quarterly.description")}</p>
+              <span className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-white/80">
+                {t("settings.membership.purchase")}
+              </span>
+            </button>
+          </div>
+          <FormStatus status={membershipOrderStatus} />
+          <div className="space-y-3">
+            <p className="text-sm text-white/60">{t("settings.membership.ordersTitle")}</p>
+            {ordersQuery.isLoading ? (
+              <p className="text-xs text-white/50">{t("settings.loading")}</p>
+            ) : ordersQuery.data && ordersQuery.data.length ? (
+              <ul className="space-y-2">
+                {ordersQuery.data.map((order) => (
+                  <li
+                    key={order.id}
+                    className="flex flex-wrap items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm"
+                  >
+                    <div>
+                      <p className="font-semibold text-white">
+                        {order.plan === "monthly"
+                          ? t("settings.membership.monthly.badge")
+                          : t("settings.membership.quarterly.badge")}
+                      </p>
+                      <p className="text-xs text-white/50">
+                        {new Date(order.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="text-right text-sm text-white/80">
+                      <p>{formatOrderPrice(order)}</p>
+                      <p className="text-xs text-white/50">{t(`settings.membership.status.${order.status}`)}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-white/50">{t("settings.membership.ordersEmpty")}</p>
+            )}
+          </div>
+        </section>
+
+        <section className="card-ambient space-y-5 rounded-3xl border border-white/10 bg-[#0b1424] p-6">
+          <SectionHeader title={t("settings.plan.title")} description={t("settings.plan.description")} />
+          <form className="space-y-4" onSubmit={handlePlanSave}>
+            <label className="flex flex-col gap-2 text-sm text-white/70">
+              <span className="text-xs uppercase tracking-wide text-white/40">{t("settings.plan.label")}</span>
+              <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+                <input
+                  type="range"
+                  min={planRange.min}
+                  max={planRange.max}
+                  value={planQuestions}
+                  onChange={(event) => setPlanQuestions(Number(event.target.value))}
+                  className="w-full accent-white"
+                />
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="number"
+                      min={planRange.min}
+                      max={planRange.max}
+                      value={planQuestions}
+                      onChange={(event) => setPlanQuestions(Number(event.target.value))}
+                      className="w-24 rounded-2xl border border-white/20 bg-[#060d1c] px-3 py-2 text-center text-base font-semibold text-white"
+                    />
+                    <p className="text-xs text-white/50">
+                      {t("settings.plan.range", { min: planRange.min, max: planRange.max })}
+                    </p>
+                  </div>
+                  <p className="text-xs text-white/60">{t("settings.plan.helper")}</p>
+                </div>
+              </div>
+            </label>
+            <div className="flex items-center gap-3">
+              <button
+                type="submit"
+                className="btn-cta px-4 py-2 text-sm"
+                disabled={planStatus.state === "loading"}
+              >
+                {planStatus.state === "loading"
+                  ? t("settings.saving")
+                  : planStatus.state === "success"
+                  ? t("settings.plan.savedShort")
+                  : t("settings.plan.save")}
+              </button>
+              <FormStatus status={planStatus} />
+            </div>
+          </form>
+        </section>
 
         <section className="card-ambient space-y-5 rounded-3xl border border-white/10 bg-[#0b1424] p-6">
           <SectionHeader title={t("settings.language.title")} description={t("settings.language.description")} />
@@ -216,7 +467,11 @@ export function SettingsPageView() {
                 className="btn-cta px-4 py-2 text-sm"
                 disabled={isLangLoading}
               >
-                {isLangLoading ? t("settings.saving") : t("settings.language.save")}
+                {isLangLoading
+                  ? t("settings.saving")
+                  : langStatus.state === "success"
+                  ? t("settings.language.savedShort")
+                  : t("settings.language.save")}
               </button>
               <FormStatus status={langStatus} />
             </div>

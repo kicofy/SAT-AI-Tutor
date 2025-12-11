@@ -29,6 +29,12 @@ from .session_schema import (
     SessionSchema,
 )
 from .import_schema import ManualParseSchema, QuestionBlockSchema
+from .support_schema import SuggestionSchema, GeneralSettingsSchema
+from .membership_schema import (
+    MembershipOrderSchema,
+    MembershipOrderCreateSchema,
+    MembershipOrderDecisionSchema,
+)
 
 __all__ = [
     "AdminCreateSchema",
@@ -54,5 +60,10 @@ __all__ = [
     "SessionSchema",
     "ManualParseSchema",
     "QuestionBlockSchema",
+    "SuggestionSchema",
+    "GeneralSettingsSchema",
+    "MembershipOrderSchema",
+    "MembershipOrderCreateSchema",
+    "MembershipOrderDecisionSchema",
 ]
 

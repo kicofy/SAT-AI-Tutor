@@ -8,10 +8,9 @@ from flask import Blueprint, jsonify, request, abort, send_file
 from flask_jwt_extended import current_user, jwt_required
 from marshmallow import ValidationError
 
-from sqlalchemy.exc import IntegrityError
 from werkzeug.exceptions import BadRequest
 
-from ..models import Question, StudySession, UserQuestionLog, QuestionExplanationCache, QuestionFigure
+from ..models import Question, StudySession, UserQuestionLog, QuestionFigure
 from pathlib import Path
 from ..schemas import (
     SessionAnswerSchema,
@@ -19,8 +18,15 @@ from ..schemas import (
     SessionStartSchema,
     SessionExplanationSchema,
 )
-from ..services import session_service, ai_explainer, adaptive_engine
-from ..services import learning_plan_service, tutor_notes_service, diagnostic_service
+from ..services import (
+    session_service,
+    adaptive_engine,
+    learning_plan_service,
+    tutor_notes_service,
+    diagnostic_service,
+    membership_service,
+    question_explanation_service,
+)
 from ..extensions import db
 
 learning_bp = Blueprint("learning_bp", __name__)
@@ -46,6 +52,18 @@ def _diagnostic_guard():
         ),
         HTTPStatus.PRECONDITION_REQUIRED,
     )
+
+
+def _membership_plan_guard():
+    diag_guard = _diagnostic_guard()
+    if diag_guard:
+        return diag_guard
+    try:
+        membership_service.ensure_plan_access(current_user)
+    except membership_service.PlanAccessDenied as exc:
+        payload = {"error": exc.code, **exc.payload}
+        return jsonify(payload), HTTPStatus.PAYMENT_REQUIRED
+    return None
 
 
 @learning_bp.errorhandler(ValidationError)
@@ -78,6 +96,7 @@ def start_session():
         user_id=current_user.id,
         num_questions=payload["num_questions"],
         section=payload.get("section"),
+        source_id=payload.get("source_id"),
     )
     if not questions:
         return jsonify({"message": "No questions available"}), HTTPStatus.BAD_REQUEST
@@ -133,36 +152,21 @@ def fetch_explanation():
         abort(404)
     question = Question.query.filter_by(id=payload["question_id"]).first_or_404()
     user_language = _resolve_user_language(current_user)
-    answer_value = _extract_answer_value(log.user_answer)
 
-    if _log_matches_language(log.explanation, user_language):
-        return jsonify({"explanation": log.explanation})
+    try:
+        quota = membership_service.consume_ai_explain_quota(current_user)
+    except membership_service.AiQuotaExceeded as exc:
+        return jsonify({"error": exc.code, **exc.payload}), HTTPStatus.TOO_MANY_REQUESTS
 
-    cached = QuestionExplanationCache.query.filter_by(
-        question_id=question.id,
-        language=user_language,
-        answer_value=answer_value,
-    ).first()
-    if cached:
-        log.explanation = cached.explanation
-        db.session.commit()
-        return jsonify({"explanation": cached.explanation})
-
-    explanation = ai_explainer.generate_explanation(
+    cache = question_explanation_service.ensure_explanation(
         question=question,
-        user_answer=log.user_answer,
-        user_language=user_language,
-        depth="standard",
-    )
-    log.explanation = explanation
-    db.session.commit()
-    _store_explanation_cache(
-        question_id=question.id,
         language=user_language,
-        answer_value=answer_value,
-        explanation=explanation,
+        source="runtime",
     )
-    return jsonify({"explanation": explanation})
+    log.explanation = cache.explanation
+    log.viewed_explanation = True
+    db.session.commit()
+    return jsonify({"explanation": cache.explanation, "quota": quota})
 
 
 @learning_bp.post("/session/explanation/clear")
@@ -181,14 +185,9 @@ def clear_explanation():
         abort(404)
     question = Question.query.filter_by(id=payload["question_id"]).first_or_404()
     language = _resolve_user_language(current_user)
-    answer_value = _extract_answer_value(log.user_answer)
 
     log.explanation = None
-    QuestionExplanationCache.query.filter_by(
-        question_id=question.id,
-        language=language,
-        answer_value=answer_value,
-    ).delete()
+    question_explanation_service.delete_explanation(question.id, language)
     db.session.commit()
     return jsonify({"message": "Explanation cleared"}), HTTPStatus.OK
 
@@ -238,7 +237,7 @@ def mastery_snapshot():
 @learning_bp.get("/plan/today")
 @jwt_required()
 def plan_today():
-    guard = _diagnostic_guard()
+    guard = _membership_plan_guard()
     if guard:
         return guard
     plan, tasks = learning_plan_service.get_plan_with_tasks(current_user.id)
@@ -248,7 +247,7 @@ def plan_today():
 @learning_bp.post("/plan/regenerate")
 @jwt_required()
 def plan_regenerate():
-    guard = _diagnostic_guard()
+    guard = _membership_plan_guard()
     if guard:
         return guard
     plan = learning_plan_service.generate_daily_plan(current_user.id)
@@ -259,7 +258,7 @@ def plan_regenerate():
 @learning_bp.get("/plan/tasks")
 @jwt_required()
 def plan_tasks():
-    guard = _diagnostic_guard()
+    guard = _membership_plan_guard()
     if guard:
         return guard
     _, tasks = learning_plan_service.get_plan_with_tasks(current_user.id)
@@ -269,7 +268,7 @@ def plan_tasks():
 @learning_bp.post("/plan/tasks/<string:block_id>/start")
 @jwt_required()
 def plan_task_start(block_id: str):
-    guard = _diagnostic_guard()
+    guard = _membership_plan_guard()
     if guard:
         return guard
     try:
@@ -291,10 +290,14 @@ def plan_task_start(block_id: str):
 @learning_bp.get("/tutor-notes/today")
 @jwt_required()
 def tutor_notes_today():
-    guard = _diagnostic_guard()
+    guard = _membership_plan_guard()
     if guard:
         return guard
-    notes = tutor_notes_service.get_or_generate_tutor_notes(current_user.id)
+    language = request.args.get("lang")
+    refresh = request.args.get("refresh") == "true"
+    notes = tutor_notes_service.get_or_generate_tutor_notes(
+        current_user.id, language=language, refresh=refresh
+    )
     return jsonify(notes)
 
 
@@ -309,6 +312,8 @@ def _resolve_user_language(user):
     if not preference:
         return "en"
     lowered = preference.lower()
+    if "bilingual" in lowered:
+        return "en"
     if "zh" in lowered or "cn" in lowered:
         return "zh"
     if "en" in lowered:
@@ -316,42 +321,27 @@ def _resolve_user_language(user):
     return preference
 
 
-def _extract_answer_value(user_answer):
-    if isinstance(user_answer, dict):
-        raw = user_answer.get("value")
-        if raw is None:
-            return None
-        return str(raw)
-    if isinstance(user_answer, str):
-        return user_answer
-    return None
-
-
-def _log_matches_language(explanation_obj, language):
-    if not isinstance(explanation_obj, dict):
-        return False
-    return explanation_obj.get("language") == language
-
-
-def _store_explanation_cache(question_id, language, answer_value, explanation):
-    cache = QuestionExplanationCache(
-        question_id=question_id,
-        language=language,
-        answer_value=answer_value,
-        explanation=explanation,
-    )
-    db.session.add(cache)
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-
-
 @learning_bp.get("/questions/figures/<int:figure_id>/image")
 @jwt_required()
 def get_question_figure_image(figure_id: int):
     figure = QuestionFigure.query.filter_by(id=figure_id).first()
     if not figure or figure.question_id is None or not figure.image_path:
+        abort(404)
+    path = Path(figure.image_path)
+    if not path.exists():
+        abort(404)
+    return send_file(path, mimetype="image/png")
+
+
+@learning_bp.get("/questions/preview-figures/<int:figure_id>/image")
+@jwt_required()
+def get_preview_figure_image(figure_id: int):
+    """Serve figure images for draft/previews (used in practice preview)."""
+    figure = QuestionFigure.query.filter_by(id=figure_id).first()
+    if not figure or not figure.image_path:
+        abort(404)
+    # Allow either question-linked or draft-linked figures.
+    if figure.question_id is None and figure.draft_id is None:
         abort(404)
     path = Path(figure.image_path)
     if not path.exists():

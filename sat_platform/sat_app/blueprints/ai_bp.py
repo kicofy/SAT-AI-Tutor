@@ -11,9 +11,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from ..extensions import db
-from ..models import Question, StudySession, UserQuestionLog
-from ..services import ai_explainer
-from ..services import ai_diagnostic, session_service
+from ..models import Question, StudySession, UserQuestionLog, QuestionExplanationCache
+from ..services import (
+    ai_explainer,
+    ai_diagnostic,
+    session_service,
+    membership_service,
+    question_explanation_service,
+)
 
 ai_bp = Blueprint("ai_bp", __name__)
 
@@ -53,13 +58,17 @@ def explain():
     if question is None:
         abort(404)
     language = payload.get("user_language") or _resolve_user_language(current_user)
+    try:
+        quota = membership_service.consume_ai_explain_quota(current_user)
+    except membership_service.AiQuotaExceeded as exc:
+        return jsonify({"error": exc.code, **exc.payload}), HTTPStatus.TOO_MANY_REQUESTS
     explanation = ai_explainer.generate_explanation(
         question=question,
         user_answer=payload["user_answer"],
         user_language=language,
         depth=payload["depth"],
     )
-    return jsonify({"explanation": explanation})
+    return jsonify({"explanation": explanation, "quota": quota})
 
 
 @ai_bp.post("/diagnose")
@@ -151,9 +160,27 @@ def explain_history():
     latest_query = latest_query.order_by(latest_subquery.c.answered_at.desc())
     pagination = latest_query.paginate(page=page, per_page=per_page, error_out=False)
 
+    language = _resolve_user_language(current_user)
+    question_ids = [item.question_id for item in pagination.items]
+    explained_ids: set[int] = set()
+    if question_ids:
+        rows = (
+            QuestionExplanationCache.query.filter(
+                QuestionExplanationCache.question_id.in_(question_ids),
+                QuestionExplanationCache.language == language,
+            ).all()
+        )
+        explained_ids = {row.question_id for row in rows}
+
+    history_items = []
+    for item in pagination.items:
+        entry = _serialize_history_entry(item)
+        entry["has_ai_explanation"] = entry["question_id"] in explained_ids
+        history_items.append(entry)
+
     return jsonify(
         {
-            "items": [_serialize_history_entry(item) for item in pagination.items],
+            "items": history_items,
             "pagination": {
                 "page": pagination.page,
                 "pages": pagination.pages,
@@ -196,14 +223,20 @@ def explain_detail():
             .first()
         )
 
-    explanation_payload = log.explanation if log else None
+    language = _resolve_user_language(current_user)
+    cache = question_explanation_service.get_explanation(question.id, language)
+    explanation_payload = cache.explanation if cache else None
+    if log and explanation_payload and not log.explanation:
+        log.explanation = explanation_payload
+        db.session.commit()
     attempt_count = (
         UserQuestionLog.query.filter_by(user_id=current_user.id, question_id=question.id).count()
     )
 
     meta = _serialize_detail_meta(question, log)
     meta["attempt_count"] = attempt_count
-    meta["has_ai_explanation"] = bool(explanation_payload)
+    meta["has_ai_explanation"] = bool(cache)
+    meta["explanation_language"] = language
 
     detail = {
         "question": session_service.serialize_question(question),
@@ -243,17 +276,29 @@ def explain_generate():
         if log is None:
             abort(404)
 
-    user_answer = log.user_answer or question.correct_answer
-    explanation_payload = ai_explainer.generate_explanation(
+    language = _resolve_user_language(current_user)
+    cache = question_explanation_service.get_explanation(question.id, language)
+    if cache:
+        log.explanation = cache.explanation
+        log.viewed_explanation = True
+        db.session.commit()
+        quota_status = membership_service.describe_ai_explain_quota(current_user)
+        return jsonify({"explanation": cache.explanation, "quota": quota_status})
+
+    try:
+        quota = membership_service.consume_ai_explain_quota(current_user)
+    except membership_service.AiQuotaExceeded as exc:
+        return jsonify({"error": exc.code, **exc.payload}), HTTPStatus.TOO_MANY_REQUESTS
+
+    cache = question_explanation_service.ensure_explanation(
         question=question,
-        user_answer=user_answer,
-        user_language=_resolve_user_language(current_user),
-        depth="standard",
+        language=language,
+        source="runtime",
     )
-    log.explanation = explanation_payload
+    log.explanation = cache.explanation
     log.viewed_explanation = True
     db.session.commit()
-    return jsonify({"explanation": explanation_payload})
+    return jsonify({"explanation": cache.explanation, "quota": quota})
 
 
 def _resolve_user_language(user):
@@ -262,6 +307,8 @@ def _resolve_user_language(user):
     if not preference:
         return "en"
     lowered = preference.lower()
+    if "bilingual" in lowered:
+        return "en"
     if "zh" in lowered or "cn" in lowered:
         return "zh"
     if "en" in lowered:

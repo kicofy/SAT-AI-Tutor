@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState, useCallback, type ReactNode } from "react";
+import { AxiosError } from "axios";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/app-shell";
 import { PlanBlocks } from "@/components/dashboard/plan-blocks";
@@ -12,6 +13,8 @@ import { useI18n } from "@/hooks/use-i18n";
 import { skipDiagnosticAttempt } from "@/services/diagnostic";
 import { extractErrorMessage } from "@/lib/errors";
 import { DiagnosticStatus } from "@/types/diagnostic";
+import { useAuthStore } from "@/stores/auth-store";
+import type { MembershipStatus } from "@/types/auth";
 
 const formatMinutesDuration = (minutes: number) => {
   if (!Number.isFinite(minutes) || minutes <= 0) {
@@ -65,7 +68,7 @@ function deriveHighlights(
   if (plan?.insights?.length) {
     plan.insights.slice(0, 2).forEach((insight) => pushUnique(insight));
   }
-  if (latestProgress) {
+  if (latestProgress && typeof latestProgress.accuracy === "number") {
     pushUnique(
       t("ai.highlightRecentAccuracy", {
         accuracy: Math.round(latestProgress.accuracy * 100),
@@ -90,6 +93,27 @@ export function DashboardView() {
   const diagnosticStatus = diagnosticQuery.data;
   const requiresDiagnostic = diagnosticStatus?.requires_diagnostic ?? false;
   const planDetail = planQuery.data?.plan;
+  const membership = useAuthStore((state) => state.user?.membership);
+  const planQueryError = planQuery.error;
+  const planMembershipPayload =
+    planQueryError instanceof AxiosError &&
+    planQueryError.response?.status === 402 &&
+    planQueryError.response?.data?.error === "membership_required"
+      ? (planQueryError.response?.data as { membership?: MembershipStatus; message?: string })
+      : null;
+  const showPlanLocked =
+    Boolean(planMembershipPayload) ||
+    (membership ? !(membership.is_member || membership.trial_active) : false);
+  const planLockedMembership = planMembershipPayload?.membership ?? membership;
+  const planLockedMessage = planMembershipPayload?.message ?? null;
+  const showTrialBanner = Boolean(
+    membership?.trial_active &&
+      membership.trial_expires_at &&
+      !membership.is_member
+  );
+  const trialBannerDate = showTrialBanner
+    ? new Date(membership!.trial_expires_at!).toLocaleDateString()
+    : null;
   const planTaskMap = useMemo(() => {
     const entries: Record<string, PlanTask | undefined> = {};
     const tasks = planQuery.data?.tasks ?? planDetail?.tasks ?? [];
@@ -179,17 +203,6 @@ export function DashboardView() {
     const tasks = planQuery.data?.tasks ?? planDetail?.tasks ?? [];
     return tasks.find((task) => task.status === "active") ?? null;
   }, [planDetail?.tasks, planQuery.data?.tasks]);
-  const floatingContinueInfo = useMemo(() => {
-    if (!activePlanTask || !activePlanTask.block_id) {
-      return null;
-    }
-    const block = planBlocksById.get(activePlanTask.block_id);
-    const skillLabel = block?.focus_skill_label ?? block?.focus_skill ?? "";
-    return {
-      href: `/plan/tasks/${encodeURIComponent(activePlanTask.block_id)}`,
-      skillLabel,
-    };
-  }, [activePlanTask, planBlocksById]);
   const sessionCount = progressQuery.data?.length ?? 0;
   const handleSkipDiagnostic = useCallback(async () => {
     setSkipError(null);
@@ -241,8 +254,9 @@ export function DashboardView() {
     },
     {
       label: t("plan.hero.stat.accuracy"),
-      value: latestProgress
-        ? `${Math.round(latestProgress.accuracy * 100)}%`
+      value:
+        latestProgress && typeof latestProgress.accuracy === "number"
+          ? `${Math.round(latestProgress.accuracy * 100)}%`
         : t("plan.hero.stat.placeholder"),
     },
     {
@@ -280,6 +294,11 @@ export function DashboardView() {
   return (
     <AppShell>
       <div className="col-span-full mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-8">
+        {showTrialBanner && trialBannerDate && (
+          <div className="card-ambient rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+            {t("plan.trial.banner", { date: trialBannerDate })}
+          </div>
+        )}
         <section className="card-ambient rounded-3xl border border-white/10 bg-[#0c1527]/95 p-6 text-center">
           <p className="text-xs uppercase tracking-[0.3em] text-white/50">{t("plan.hero.heading")}</p>
           <p className="mt-2 text-2xl font-semibold text-white">{t("plan.card.title")}</p>
@@ -299,7 +318,9 @@ export function DashboardView() {
           <Collapsible isOpen={!collapsed.plan}>
             <div className="mt-5 flex flex-col gap-5 lg:flex-row">
               <div className="card-ambient flex-1 rounded-2xl border border-white/10 bg-white/5 p-4">
-                {isInitialPlanLoading ? (
+                {showPlanLocked ? (
+                  <PlanLockedState membership={planLockedMembership} message={planLockedMessage} />
+                ) : isInitialPlanLoading ? (
                   <PlanGeneratingState />
                 ) : planQuery.error ? (
                   <p className="text-sm text-red-400">{t("plan.error")}</p>
@@ -383,17 +404,6 @@ export function DashboardView() {
           </Collapsible>
         </section>
       </div>
-      {floatingContinueInfo && (
-        <Link
-          href={floatingContinueInfo.href}
-          className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-semibold text-[#050E1F] shadow-lg shadow-emerald-500/20 transition hover:-translate-y-0.5 lg:right-12 lg:bottom-10"
-        >
-          <span>↺</span>
-          {t("plan.fab.continue", {
-            skill: floatingContinueInfo.skillLabel || t("plan.fab.genericSkill"),
-          })}
-        </Link>
-      )}
     </AppShell>
   );
 }
@@ -431,6 +441,33 @@ function PlanGeneratingState() {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function PlanLockedState({
+  membership,
+  message,
+}: {
+  membership?: MembershipStatus | null;
+  message?: string | null;
+}) {
+  const { t } = useI18n();
+  const trialRemaining = membership?.trial_days_remaining ?? 0;
+  const trialActive = Boolean(membership?.trial_active);
+  let body = message;
+  if (!body) {
+    body = trialActive
+      ? t("plan.locked.trial", { days: trialRemaining })
+      : t("plan.locked.detail");
+  }
+  return (
+    <div className="space-y-3 text-center text-white/70">
+      <p className="text-lg font-semibold text-white">{t("plan.locked.title")}</p>
+      <p className="text-sm text-white/60">{body}</p>
+      <Link href="/settings" className="btn-cta w-full justify-center sm:w-auto">
+        {t("plan.locked.cta")}
+      </Link>
     </div>
   );
 }

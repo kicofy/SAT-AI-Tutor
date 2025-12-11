@@ -15,6 +15,11 @@ from . import (
     mail_service,
     verification_service,
     password_reset_service,
+    settings_service,
+    membership_service,
+    question_explanation_service,
+    ai_paper_service,
+    ai_paper_prompts,
 )
 
 __all__ = [
@@ -32,4 +37,9 @@ __all__ = [
     "mail_service",
     "verification_service",
     "password_reset_service",
+    "settings_service",
+    "membership_service",
+    "question_explanation_service",
+    "ai_paper_service",
+    "ai_paper_prompts",
 ]

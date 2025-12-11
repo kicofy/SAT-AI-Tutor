@@ -86,7 +86,8 @@ export function HighlightedText({ text, directives = [], className }: Highlighte
 function getDirectiveClass(action?: string) {
   switch (action) {
     case "underline":
-      return "underline decoration-amber-300";
+      // Only underline without highlight color
+      return "underline decoration-white/80 decoration-2 bg-transparent text-inherit";
     case "circle":
       return "outline outline-2 outline-amber-300 rounded-full";
     case "strike":

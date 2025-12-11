@@ -66,6 +66,8 @@ class Question(db.Model):
     irt_b = db.Column(db.Float)
     skill_tags = db.Column(db.JSON)
     estimated_time_sec = db.Column(db.Integer)
+    question_type = db.Column(db.String(16), nullable=False, server_default="choice")  # choice | fill
+    answer_schema = db.Column(db.JSON)
     source = db.Column(db.String(255))
     page = db.Column(db.String(32))
     index_in_set = db.Column(db.Integer)
@@ -105,8 +107,8 @@ class QuestionExplanationCache(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     question_id = db.Column(db.Integer, db.ForeignKey("questions.id"), nullable=False, index=True)
     language = db.Column(db.String(16), nullable=False, default="en")
-    answer_value = db.Column(db.String(32))
     explanation = db.Column(db.JSON, nullable=False)
+    source = db.Column(db.String(32))
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = db.Column(
         db.DateTime(timezone=True),
@@ -121,8 +123,7 @@ class QuestionExplanationCache(db.Model):
         db.UniqueConstraint(
             "question_id",
             "language",
-            "answer_value",
-            name="uq_question_explanations_question_language_answer",
+            name="uq_question_explanations_question_language",
         ),
     )
 

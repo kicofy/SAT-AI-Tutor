@@ -19,6 +19,7 @@ def _create_user():
     profile = UserProfile(
         user=user,
         daily_available_minutes=60,
+        daily_plan_questions=12,
         target_score_rw=700,
         target_score_math=750,
     )

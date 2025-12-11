@@ -21,6 +21,7 @@ type DashboardCardProps = VariantProps<typeof cardVariants> & {
   title: ReactNode;
   subtitle?: ReactNode;
   children: ReactNode;
+  className?: string;
 };
 
 export function DashboardCard({
@@ -28,9 +29,10 @@ export function DashboardCard({
   subtitle,
   children,
   tone,
+  className,
 }: DashboardCardProps) {
   return (
-    <article className={clsx(cardVariants({ tone }))}>
+    <article className={clsx(cardVariants({ tone }), className)}>
       <div>
         <p className="text-base font-semibold text-white">{title}</p>
         {subtitle && <p className="text-sm text-white/60 mt-1">{subtitle}</p>}

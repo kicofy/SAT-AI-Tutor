@@ -212,7 +212,16 @@ def select_next_questions(
     query = Question.query
     if section:
         query = query.filter_by(section=section)
-    candidates = query.all()
+    base_query = query
+    if focus_skill:
+        skill_filtered = query.filter(Question.skill_tags.contains([focus_skill]))
+        candidates = skill_filtered.all()
+        if not candidates:
+            candidates = base_query.all()
+        else:
+            query = skill_filtered
+    else:
+        candidates = query.all()
 
     scored = []
     for question in candidates:

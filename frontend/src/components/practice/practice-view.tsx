@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import clsx from "clsx";
 import { DashboardCard } from "@/components/ui/dashboard-card";
 import { AppShell } from "@/components/layout/app-shell";
 import {
@@ -21,12 +22,15 @@ import {
   SessionQuestion,
   QuestionFigureRef,
   SessionProgressEntry,
+  ExplanationResponse,
 } from "@/types/session";
+import type { AiExplainQuota } from "@/types/auth";
 import {
   ExplanationViewer,
   HighlightedText,
   StepDirective,
   AnimExplanation,
+  type Translator,
 } from "@/components/practice/explanation-viewer";
 import { extractErrorMessage } from "@/lib/errors";
 import { AxiosError } from "axios";
@@ -34,6 +38,7 @@ import { env } from "@/lib/env";
 import { getClientToken } from "@/lib/auth-storage";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAuthStore } from "@/stores/auth-store";
+import { getQuestionDecorations } from "@/lib/question-decorations";
 
 const API_BASE_URL = (env.apiBaseUrl || "").replace(/\/$/, "");
 
@@ -42,6 +47,8 @@ type ViewState = "prep" | "loading" | "active";
 type PracticeViewProps = {
   planBlockId?: string;
   autoResumeDiagnostic?: boolean;
+  sourceId?: number;
+  draftId?: number;
 };
 
 type TranslateFn = ReturnType<typeof useI18n>["t"];
@@ -73,13 +80,24 @@ const formatSeconds = (value: number): string => {
   return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 };
 
-export function PracticeView({ planBlockId, autoResumeDiagnostic = false }: PracticeViewProps = {}) {
+export function PracticeView({
+  planBlockId,
+  autoResumeDiagnostic = false,
+  sourceId,
+  draftId,
+}: PracticeViewProps = {}) {
   const { t } = useI18n();
+  const translator = useMemo<Translator>(
+    () => ((key, params) => t(key as any, params as any)) as Translator,
+    [t]
+  );
   const queryClient = useQueryClient();
   const router = useRouter();
   const isPlanTaskMode = Boolean(planBlockId);
   const userId = useAuthStore((state) => state.user?.id);
-  const initialViewState: ViewState = isPlanTaskMode || autoResumeDiagnostic ? "loading" : "prep";
+  const isDraftPreview = Boolean(draftId);
+  const initialViewState: ViewState =
+    isPlanTaskMode || autoResumeDiagnostic || sourceId || isDraftPreview ? "loading" : "prep";
   const [viewState, setViewState] = useState<ViewState>(initialViewState);
   const [session, setSession] = useState<Session | null>(null);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
@@ -92,13 +110,24 @@ export function PracticeView({ planBlockId, autoResumeDiagnostic = false }: Prac
   const [planDetail, setPlanDetail] = useState<StudyPlanDetail | null>(null);
   const [planTasksMap, setPlanTasksMap] = useState<Record<string, PlanTask>>({});
   const [planError, setPlanError] = useState<string | null>(null);
+  const authUser = useAuthStore((state) => state.user);
+  const updateAuthUser = useAuthStore((state) => state.updateUser);
+  const applyQuotaUpdate = useCallback(
+    (quota?: AiExplainQuota) => {
+      if (!quota || !authUser) return;
+      updateAuthUser({ ...authUser, ai_explain_quota: quota });
+    },
+    [authUser, updateAuthUser]
+  );
   const [error, setError] = useState<string | null>(null);
   const [completionMessage, setCompletionMessage] = useState<string | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isExplanationLoading, setExplanationLoading] = useState(false);
   const [maxQuestions, setMaxQuestions] = useState(DEFAULT_MAX_QUESTIONS);
   const [activeDirectives, setActiveDirectives] = useState<StepDirective[]>([]);
-  const [mediaToken, setMediaToken] = useState<string | null>(null);
+  const [mediaToken, setMediaToken] = useState<string | null>(
+    typeof window !== "undefined" ? getClientToken() : null
+  );
   const [isFinishDialogOpen, setFinishDialogOpen] = useState(false);
   const [isAbortDialogOpen, setAbortDialogOpen] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
@@ -266,6 +295,25 @@ export function PracticeView({ planBlockId, autoResumeDiagnostic = false }: Prac
 
   const currentQuestion: SessionQuestion | undefined =
     session?.questions_assigned[currentIndex];
+  const isFillQuestion = (currentQuestion?.question_type || "choice") === "fill";
+  const showChoiceList = !isFillQuestion && currentQuestion?.choices && Object.keys(currentQuestion.choices).length;
+
+  const choiceFigureIds = useMemo(() => {
+    const set = new Set<number>();
+    if (currentQuestion?.choice_figures) {
+      Object.values(currentQuestion.choice_figures).forEach((ref) => {
+        if (ref?.id != null) set.add(ref.id);
+      });
+    }
+    return set;
+  }, [currentQuestion]);
+
+  const displayFigures = useMemo(() => {
+    if (!currentQuestion?.figures?.length) return [];
+    return currentQuestion.figures.filter((fig) => !choiceFigureIds.has(fig.id));
+  }, [currentQuestion, choiceFigureIds]);
+
+  const hasChoiceImages = useMemo(() => choiceFigureIds.size > 0, [choiceFigureIds]);
 
   const currentQuestionId = currentQuestion?.question_id ?? null;
 
@@ -292,6 +340,16 @@ export function PracticeView({ planBlockId, autoResumeDiagnostic = false }: Prac
       : null;
   const currentProgress = progressKey ? questionProgress[progressKey] : undefined;
   const explanation = currentProgress?.explanation;
+
+  const questionDecorations = useMemo(
+    () => getQuestionDecorations(currentQuestion ?? null),
+    [currentQuestion]
+  );
+
+  const combinedDirectives = useMemo(
+    () => [...questionDecorations, ...activeDirectives],
+    [questionDecorations, activeDirectives]
+  );
 
   const currentSectionLine = useMemo(() => {
     if (!currentQuestion) {
@@ -333,20 +391,20 @@ useEffect(() => {
 }, [activeSession]);
 
   const passageDirectives = useMemo(
-    () => activeDirectives.filter((d) => d.target === "passage"),
-    [activeDirectives]
+    () => combinedDirectives.filter((d) => d.target === "passage"),
+    [combinedDirectives]
   );
   const stemDirectives = useMemo(
-    () => activeDirectives.filter((d) => d.target === "stem"),
-    [activeDirectives]
+    () => combinedDirectives.filter((d) => d.target === "stem"),
+    [combinedDirectives]
   );
   const choiceDirectives = useMemo(
-    () => activeDirectives.filter((d) => d.target === "choices"),
-    [activeDirectives]
+    () => combinedDirectives.filter((d) => d.target === "choices"),
+    [combinedDirectives]
   );
   const figureDirectives = useMemo(
-    () => activeDirectives.filter((d) => d.target === "figure"),
-    [activeDirectives]
+    () => combinedDirectives.filter((d) => d.target === "figure"),
+    [combinedDirectives]
   );
 
   const matchesChoiceDirective = useCallback((directive: StepDirective, key: string) => {
@@ -492,6 +550,7 @@ useEffect(() => {
         const newSession = await startSession({
           num_questions: clampedCount,
           section: prepConfig.section || undefined,
+          source_id: sourceId,
         });
         setSession(newSession);
         setQuestionProgress({});
@@ -525,7 +584,46 @@ useEffect(() => {
     setError(t("practice.error.activeSession"));
     setViewState("prep");
     return false;
-  }, [planBlockId, prepConfig.num_questions, prepConfig.section, maxQuestions, t]);
+  }, [planBlockId, prepConfig.num_questions, prepConfig.section, maxQuestions, t, sourceId]);
+
+  const loadDraftPreview = useCallback(async (): Promise<boolean> => {
+    if (!draftId) return false;
+    try {
+      const token = await getClientToken();
+      const resp = await fetch(`${API_BASE_URL}/api/admin/questions/drafts/${draftId}/preview`, {
+        headers: {
+          Authorization: token ? `Bearer ${token}` : "",
+        },
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `Preview failed (${resp.status})`);
+      }
+      const data = (await resp.json()) as { question?: SessionQuestion };
+      if (!data?.question) {
+        throw new Error("Preview question missing");
+      }
+      const previewSession: Session = {
+        id: -draftId,
+        session_type: "preview",
+        questions_assigned: [data.question],
+        questions_done: [],
+      };
+      setSession(previewSession);
+      setQuestionProgress({});
+      setCurrentIndex(0);
+      setSelectedChoice(null);
+      setActiveDirectives([]);
+      setViewState("active");
+      setActiveSession(null);
+      return true;
+    } catch (err: unknown) {
+      const message = extractErrorMessage(err, t("practice.error.start"));
+      setError(message);
+      setViewState("prep");
+      return false;
+    }
+  }, [draftId, t]);
 
   async function handleStart(e: React.FormEvent) {
     e.preventDefault();
@@ -536,8 +634,22 @@ useEffect(() => {
     await attemptStart();
   }
 
+  useEffect(() => {
+    if (sourceId && viewState === "loading" && !session && !activeSession) {
+      attemptStart().catch(() => undefined);
+    }
+  }, [sourceId, viewState, session, activeSession, attemptStart]);
+
+  useEffect(() => {
+    if (isDraftPreview && viewState === "loading" && !session && !activeSession) {
+      loadDraftPreview().catch(() => undefined);
+    }
+  }, [isDraftPreview, viewState, session, activeSession, loadDraftPreview]);
+
   async function handleCheckAnswer() {
-    if (!session || !currentQuestion || !selectedChoice || !progressKey) return;
+    if (!session || !currentQuestion || selectedChoice === null || selectedChoice === undefined || !progressKey)
+      return;
+    if (isFillQuestion && String(selectedChoice).trim() === "") return;
     setIsChecking(true);
     setError(null);
     try {
@@ -545,6 +657,27 @@ useEffect(() => {
         questionStartTime !== null
           ? Math.max(1, Math.round((Date.now() - questionStartTime) / 1000))
           : undefined;
+      if (isDraftPreview) {
+        const correct = (
+          (currentQuestion.correct_answer as { value?: string } | undefined)?.value || ""
+        )
+          .toString()
+          .trim()
+          .toUpperCase();
+        const isCorrect = correct ? correct === selectedChoice.toUpperCase() : false;
+        setQuestionProgress((prev) => ({
+          ...prev,
+          [progressKey]: {
+            ...prev[progressKey],
+            isCorrect,
+            logId: -1,
+            userChoice: selectedChoice,
+            timeSpentSec: elapsedSeconds ?? prev[progressKey]?.timeSpentSec,
+          },
+        }));
+        setQuestionStartTime(null);
+        return;
+      }
       const response = await submitAnswer({
         session_id: session.id,
         question_id: currentQuestion.question_id,
@@ -634,14 +767,17 @@ useEffect(() => {
   }
 
   async function handleViewExplanation() {
+    if (isDraftPreview) return;
     if (!session || !currentQuestion || !progressKey || explanation) return;
     setExplanationLoading(true);
     setError(null);
     try {
-    const payload = (await fetchExplanation({
+      const response = (await fetchExplanation({
         session_id: session.id,
         question_id: currentQuestion.question_id,
-    })) as AnimExplanation;
+      })) as ExplanationResponse;
+      applyQuotaUpdate(response.quota as AiExplainQuota | undefined);
+      const payload = response.explanation as AnimExplanation;
       setQuestionProgress((prev) => {
         const existing = prev[progressKey];
         return {
@@ -657,6 +793,15 @@ useEffect(() => {
         };
       });
     } catch (err: unknown) {
+      if (
+        err instanceof AxiosError &&
+        err.response?.status === 429 &&
+        err.response.data?.error === "ai_explain_quota_exceeded"
+      ) {
+        applyQuotaUpdate(err.response.data.quota as AiExplainQuota | undefined);
+        setError(t("practice.error.aiQuota"));
+        return;
+      }
       setError(extractErrorMessage(err, t("practice.error.explanation")));
     } finally {
       setExplanationLoading(false);
@@ -845,6 +990,10 @@ useEffect(() => {
           } else {
             setError(extractErrorMessage(err, t("practice.error.start")));
           }
+        } else if (err instanceof AxiosError && err.response?.status === 402) {
+          const message = err.response?.data?.message || t("plan.locked.title");
+          setError(message);
+          setPlanError(message);
         } else {
           setError(extractErrorMessage(err, t("practice.error.start")));
         }
@@ -874,6 +1023,17 @@ useEffect(() => {
     if (!session) return;
     setIsFinishing(true);
     try {
+      if (isDraftPreview) {
+        setSession(null);
+        setQuestionProgress({});
+        setSelectedChoice(null);
+        setActiveDirectives([]);
+        setViewState("prep");
+        setCompletionMessage(t("practice.session.complete"));
+        setActiveSession(null);
+        setCurrentIndex(0);
+        return;
+      }
       await endSession(session.id).catch(() => undefined);
       setSession(null);
       setQuestionProgress({});
@@ -900,15 +1060,15 @@ useEffect(() => {
       setIsFinishing(false);
       setFinishDialogOpen(false);
     }
-  }, [session, isPlanTaskMode, t, queryClient, router, userId]);
+  }, [session, isPlanTaskMode, t, queryClient, router, userId, isDraftPreview]);
 
   const handleSelectChoice = useCallback(
     (choiceKey: string) => {
-      if (currentQuestion?.unavailable_reason) {
+      if (isQuestionUnavailable || hasChecked) {
         return;
       }
-      setSelectedChoice(choiceKey);
       if (!session || !currentQuestion) return;
+      setSelectedChoice(choiceKey);
       const key = keyForQuestion(session.id, currentQuestion.question_id);
       setQuestionProgress((prev) => ({
         ...prev,
@@ -918,7 +1078,7 @@ useEffect(() => {
         },
       }));
     },
-    [session, currentQuestion]
+    [currentQuestion, hasChecked, isQuestionUnavailable, session]
   );
 
   useEffect(() => {
@@ -933,7 +1093,7 @@ useEffect(() => {
 
   const pageContent = (
     <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-0">
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         {isPlanTaskMode ? (
           <Link
             href="/"
@@ -983,27 +1143,37 @@ useEffect(() => {
             )}
           </>
         )}
-        <div className="flex flex-wrap items-center gap-3">
-          {!isPlanTaskMode &&
-            summaryStats.map((stat) => (
-              <div key={stat.label} className="stat-pill min-w-[140px] text-white">
-                <p className="text-[11px] uppercase tracking-wide text-white/60">{stat.label}</p>
-                <p className="text-base font-semibold">{stat.value}</p>
-              </div>
-            ))}
-          {session && viewState === "active" && (
-            <button
-              type="button"
-              className="btn-ghost px-4 py-2 text-sm"
-              onClick={() => setFinishDialogOpen(true)}
-            >
-              {t("practice.button.finish")}
-            </button>
-          )}
-        </div>
+        {session && viewState === "active" && (
+          <button
+            type="button"
+            className="btn-ghost px-4 py-2 text-sm"
+            onClick={() => setFinishDialogOpen(true)}
+          >
+            {t("practice.button.finish")}
+          </button>
+        )}
       </div>
-      <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start">
+      <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start mt-6">
         <div className="space-y-6">
+          {!isPlanTaskMode && viewState === "active" && summaryStats.length > 0 && (
+            <DashboardCard
+              tone="subtle"
+              className="px-4 py-3 text-sm text-white/80"
+              title={t("practice.summary.cardTitle")}
+              subtitle={t("practice.summary.cardSubtitle")}
+            >
+              <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                {summaryStats.map((stat) => (
+                  <div key={stat.label} className="flex flex-col gap-0.5">
+                    <dt className="text-[11px] uppercase tracking-wide text-white/50">
+                      {stat.label}
+                    </dt>
+                    <dd className="text-base font-semibold text-white">{stat.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </DashboardCard>
+          )}
           {isPlanTaskMode && planBlockDetail && (
             <DashboardCard
               title={t("practice.planTask.title")}
@@ -1169,7 +1339,7 @@ useEffect(() => {
             {completionMessage && (
               <p className="text-sm text-emerald-300">{completionMessage}</p>
             )}
-            {error && viewState !== "active" && (
+            {error && (
               <p className="text-sm text-red-400">{error}</p>
             )}
           </form>
@@ -1223,9 +1393,9 @@ useEffect(() => {
         </div>
             <div className="space-y-4">
             <div className="card-ambient space-y-4 rounded-2xl border border-white/10 bg-white/5 p-5">
-              {currentQuestion.figures?.length ? (
+              {displayFigures.length ? (
                 <div className="space-y-4">
-                  {currentQuestion.figures.map((figure) => {
+                  {displayFigures.map((figure) => {
                     const src = buildFigureSrc(figure.url);
                     if (!src) return null;
                     const directivesForFigure = figureDirectives.filter((directive) => {
@@ -1275,8 +1445,32 @@ useEffect(() => {
                 </div>
               )}
             </div>
-            <div className="space-y-2">
-              {Object.entries(currentQuestion.choices).map(([key, text]) => {
+              {isFillQuestion ? (
+                <div className="space-y-2">
+                  <label className="text-sm text-white/70">
+                    {t("practice.input.fillPlaceholder", "Enter your answer")}
+                  </label>
+                  <input
+                    type="text"
+                    value={selectedChoice ?? ""}
+                    onChange={(e) => {
+                      if (isQuestionUnavailable || hasChecked) return;
+                      setSelectedChoice(e.target.value);
+                    }}
+                    disabled={isQuestionUnavailable || hasChecked}
+                    className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-white placeholder:text-white/40 focus:border-white/40 focus:outline-none"
+                    placeholder={t("practice.input.fillExample", "e.g., 3.5 or 7/2")}
+                  />
+                </div>
+              ) : showChoiceList ? (
+                <div
+                  className={
+                    hasChoiceImages
+                      ? "grid grid-cols-1 gap-3 sm:grid-cols-2"
+                      : "space-y-2"
+                  }
+                >
+                {Object.entries(currentQuestion.choices).map(([key, text]) => {
                 const wholeChoiceDirectives = choiceDirectives.filter((directive) =>
                   matchesChoiceDirective(directive, key)
                 );
@@ -1300,38 +1494,73 @@ useEffect(() => {
                   (directive) => !strikeChoice && directive.action !== "note"
                 );
                 const isChoiceEmphasized = strikeChoice || noteChoice || highlightChoice;
+                const imageRef = currentQuestion.choice_figures?.[key];
+                const isSelectedChoice = !hasChecked && selectedChoice === key;
+                const isUserChoice = currentProgress?.userChoice === key;
+                const isUserCorrectChoice = hasChecked && currentProgress?.isCorrect && isUserChoice;
+                const isUserIncorrectChoice = hasChecked && isUserChoice && !currentProgress?.isCorrect;
+
+                const baseClasses =
+                  "h-full w-full rounded-xl border px-4 py-3 text-left text-sm transition relative overflow-hidden";
+                let stateClasses =
+                  "border-white/15 text-white/70 hover:border-white/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/50";
+
+                if (isQuestionUnavailable) {
+                  stateClasses = "cursor-not-allowed opacity-50 border-white/10 text-white/40";
+                } else if (isUserCorrectChoice) {
+                  stateClasses =
+                    "border-emerald-400 text-emerald-200 bg-emerald-500/10 shadow-[0_10px_25px_rgba(16,185,129,0.25)]";
+                } else if (isUserIncorrectChoice) {
+                  stateClasses =
+                    "border-rose-500 text-rose-100 bg-rose-500/10 shadow-[0_10px_25px_rgba(244,63,94,0.2)]";
+                } else if (isSelectedChoice) {
+                  stateClasses =
+                    "border-white/80 text-white bg-white/5 shadow-[0_12px_30px_rgba(5,14,31,0.45)]";
+                }
+
+                const emphasisClasses = isChoiceEmphasized
+                  ? strikeChoice
+                    ? "ring-2 ring-rose-400/70 shadow-[0_0_0_1px_rgba(248,113,113,0.4)]"
+                    : noteChoice
+                    ? "ring-2 ring-emerald-300/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]"
+                    : "ring-2 ring-amber-300/70 shadow-[0_0_0_1px_rgba(251,191,36,0.35)]"
+                  : "";
+
+                const strikeDecoration = strikeChoice ? "line-through decoration-rose-300" : "";
+
                 return (
                   <button
                     key={key}
                     onClick={() => handleSelectChoice(key)}
-                    disabled={isQuestionUnavailable}
-                    className={`w-full rounded-xl border px-4 py-2 text-left text-sm transition ${
-                      isQuestionUnavailable
-                        ? "cursor-not-allowed opacity-50"
-                        :
-                      selectedChoice === key
-                        ? "border-white/80 text-white"
-                        : hasChecked && currentProgress?.isCorrect && currentProgress?.userChoice === key
-                        ? "border-emerald-400 text-emerald-200 bg-emerald-500/10"
-                        : hasChecked && currentProgress?.userChoice === key && !currentProgress?.isCorrect
-                        ? "border-rose-500 text-rose-100 bg-rose-500/10"
-                        : isChoiceEmphasized
-                        ? strikeChoice
-                          ? "border-rose-500 text-white line-through decoration-rose-300 bg-rose-500/10 shadow-[0_0_0_1px_rgba(248,113,113,0.5)]"
-                          : "border-amber-400 text-white shadow-[0_0_0_1px_rgba(251,191,36,0.4)] bg-amber-400/5"
-                        : "border-white/15 text-white/70 hover:border-white/40"
-                    }`}
+                    disabled={isQuestionUnavailable || hasChecked}
+                    className={clsx(baseClasses, stateClasses, emphasisClasses)}
                   >
-                    <span className="mr-3 font-semibold">{key}.</span>
-                    <HighlightedText
-                      text={text}
-                      directives={snippetDirectives}
-                      className="inline whitespace-pre-wrap text-sm"
-                    />
+                    <div className="flex items-start gap-3">
+                      <span className={clsx("mt-1 font-semibold", strikeDecoration)}>{key}.</span>
+                      <div className="flex flex-1 flex-col gap-2">
+                        {imageRef ? (
+                          <div className="flex w-full justify-start">
+                            <img
+                              src={buildFigureSrc(imageRef.url) || imageRef.url}
+                              alt={imageRef.description || `Choice ${key}`}
+                              className="h-44 w-full max-w-[280px] rounded-lg border border-white/10 bg-black/20 p-2 object-contain md:h-52 md:max-w-[340px]"
+                            />
+                          </div>
+                        ) : null}
+                        {text ? (
+                          <HighlightedText
+                            text={text}
+                            directives={snippetDirectives}
+                            className={clsx("whitespace-pre-wrap text-sm leading-relaxed", strikeDecoration)}
+                          />
+                        ) : null}
+                      </div>
+                    </div>
                   </button>
                 );
               })}
             </div>
+              ) : null}
               <div className="card-ambient space-y-3 rounded-2xl border border-white/15 bg-white/5 p-4 text-sm">
               <div className="flex flex-col gap-1">
                 {hasChecked ? (
@@ -1363,7 +1592,7 @@ useEffect(() => {
                 <div className="flex flex-wrap gap-3">
                   <button
                     className="btn-ghost px-4 py-2 text-sm disabled:opacity-40"
-                    disabled={Boolean(explanation) || isExplanationLoading}
+                    disabled={isDraftPreview || Boolean(explanation) || isExplanationLoading}
                     onClick={handleViewExplanation}
                   >
                     {explanation
@@ -1434,7 +1663,7 @@ useEffect(() => {
               <ExplanationViewer
                 explanation={explanation}
                 onDirectivesChange={setActiveDirectives}
-                t={t}
+                t={translator}
               />
             ) : (
               <p className="text-sm text-white/70">{t("practice.strategy.empty")}</p>

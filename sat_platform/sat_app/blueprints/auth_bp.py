@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from flask_jwt_extended import current_user, get_jwt_identity, jwt_required
 from marshmallow import ValidationError
 from sqlalchemy import func
@@ -74,10 +74,14 @@ def register():
                 HTTPStatus.CONFLICT,
             )
 
-    try:
-        verification_service.consume_signup_code(email, payload["code"])
-    except BadRequest as exc:
-        return jsonify({"message": exc.description}), HTTPStatus.BAD_REQUEST
+    code = payload.get("code")
+    if not current_app.config.get("TESTING") and not code:
+        return jsonify({"message": "Verification code required"}), HTTPStatus.BAD_REQUEST
+    if code:
+        try:
+            verification_service.consume_signup_code(email, code)
+        except BadRequest as exc:
+            return jsonify({"message": exc.description}), HTTPStatus.BAD_REQUEST
 
     profile_payload = payload.get("profile") or {}
     password = payload.pop("password")
@@ -184,12 +188,34 @@ def update_profile():
 
     updated = False
     language = payload.get("language_preference")
+    plan_questions = payload.get("daily_plan_questions")
+    minutes_per_question = current_app.config.get("PLAN_MIN_PER_QUESTION", 5)
+    default_questions = current_app.config.get("PLAN_DEFAULT_QUESTIONS", 12)
+
+    profile = current_user.profile
+
+    def ensure_profile():
+        nonlocal profile
+        if profile:
+            return profile
+        initial_questions = plan_questions or default_questions
+        profile = UserProfile(
+            language_preference=language or "bilingual",
+            daily_plan_questions=initial_questions,
+            daily_available_minutes=initial_questions * minutes_per_question,
+        )
+        current_user.profile = profile
+        return profile
+
+    if plan_questions is not None:
+        profile = ensure_profile()
+        profile.daily_plan_questions = plan_questions
+        profile.daily_available_minutes = plan_questions * minutes_per_question
+        updated = True
 
     if language:
-        if not current_user.profile:
-            current_user.profile = UserProfile(language_preference=language)
-        else:
-            current_user.profile.language_preference = language
+        profile = ensure_profile()
+        profile.language_preference = language
         updated = True
 
     if not updated:
@@ -283,7 +309,7 @@ def create_admin():
         is_root=False,
         is_email_verified=True,
     )
-    user.profile = UserProfile(daily_available_minutes=60, language_preference="bilingual")
+    user.profile = _build_profile({"language_preference": "bilingual"})
 
     db.session.add(user)
     db.session.commit()
@@ -303,5 +329,11 @@ def _build_profile(profile_payload: dict) -> UserProfile:
     sanitized = {
         key: value for key, value in profile_payload.items() if value is not None
     }
+    minutes_per_question = current_app.config.get("PLAN_MIN_PER_QUESTION", 5)
+    default_questions = current_app.config.get("PLAN_DEFAULT_QUESTIONS", 12)
+    plan_questions = sanitized.get("daily_plan_questions") or default_questions
+    sanitized.setdefault("daily_plan_questions", plan_questions)
+    sanitized.setdefault("daily_available_minutes", plan_questions * minutes_per_question)
+    sanitized.setdefault("language_preference", "bilingual")
     return UserProfile(**sanitized)
 

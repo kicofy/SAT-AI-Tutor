@@ -9,6 +9,7 @@ import {
   getAdminUsers,
   getAdminUser,
   updateAdminUser,
+  updateUserMembership,
   getAdminQuestions,
   getAdminQuestion,
   updateAdminQuestion,
@@ -17,8 +18,29 @@ import {
   fetchQuestionFigureSource,
   uploadQuestionFigure,
   deleteQuestionFigure,
+  getGeneralSettings,
+  updateGeneralSettings,
+  deleteQuestionsBulk,
+  deleteSource,
+  listAIPaperJobs,
+  createAIPaperJob,
+  resumeAIPaperJob,
+  fetchOpenaiLogs,
+  deleteAIPaperJob,
+  getQuestionCategories,
 } from "@/services/admin";
-import { AdminQuestion, AdminSource, AdminUser, UserLearningSnapshot } from "@/types/admin";
+import {
+  AdminQuestion,
+  AdminSource,
+  AdminUser,
+  GeneralSettings,
+  UserLearningSnapshot,
+  AIPaperJob,
+  OpenAILogEntry,
+  PaginatedResponse,
+  QuestionCategory,
+} from "@/types/admin";
+import type { MembershipOrder } from "@/types/membership";
 import { extractErrorMessage } from "@/lib/errors";
 import { FigureCropper } from "@/components/admin/figure-cropper";
 import { ImportWorkspace } from "@/components/admin/import-workspace";
@@ -26,11 +48,30 @@ import { FigureSource } from "@/types/figure";
 import { getCroppedBlob, SelectionRect } from "@/lib/image";
 import { env } from "@/lib/env";
 import { getClientToken } from "@/lib/auth-storage";
+import { useI18n } from "@/hooks/use-i18n";
+import { listMembershipOrdersAdmin, decideMembershipOrder } from "@/services/membership";
+import type { StepDirective } from "@/components/practice/explanation-viewer";
+import { getQuestionDecorations } from "@/lib/question-decorations";
 
 const PAGE_SIZE = 20;
 const DETAIL_PAGE_SIZE = 20;
+const STAGE_LABELS: Record<string, string> = {
+  pending: "Queued",
+  queued: "Queued",
+  outline: "Planning outline",
+  finalizing: "Finalizing",
+};
+const OPENAI_LOG_LIMIT = 200;
 
-type TabKey = "users" | "questions" | "collections" | "import";
+type TabKey =
+  | "users"
+  | "questions"
+  | "collections"
+  | "categories"
+  | "import"
+  | "membership"
+  | "settings"
+  | "aiPapers";
 
 export function AdminPanelView() {
   const [activeTab, setActiveTab] = useState<TabKey>("users");
@@ -39,7 +80,15 @@ export function AdminPanelView() {
     { key: "users", label: "Users", description: "Manage accounts and roles" },
     { key: "questions", label: "Question Bank", description: "Edit and review questions" },
     { key: "collections", label: "PDF Collections", description: "Review uploaded sets" },
+    {
+      key: "categories",
+      label: "Question Categories",
+      description: "Browse questions grouped by skill tags",
+    },
     { key: "import", label: "Upload & Import", description: "Process new question sets" },
+    { key: "membership", label: "Membership Orders", description: "Review subscription intents" },
+    { key: "aiPapers", label: "AI Papers", description: "Auto-generate SAT-ready sets" },
+    { key: "settings", label: "General Settings", description: "Manage platform defaults" },
   ];
 
   return (
@@ -83,7 +132,18 @@ export function AdminPanelView() {
             }}
           />
         )}
+        {activeTab === "categories" && (
+          <QuestionCategoriesTab
+            onJumpToQuestion={(questionId) => {
+              setQuestionFocusId(questionId);
+              setActiveTab("questions");
+            }}
+          />
+        )}
         {activeTab === "import" && <ImportTab />}
+        {activeTab === "membership" && <MembershipTab />}
+        {activeTab === "aiPapers" && <AIPaperGeneratorTab />}
+        {activeTab === "settings" && <GeneralSettingsTab />}
       </div>
     </AppShell>
   );
@@ -115,6 +175,14 @@ function UsersTab() {
   const updateUserMutation = useMutation({
     mutationFn: (payload: { userId: number; data: any }) =>
       updateAdminUser(payload.userId, payload.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-user-detail"] });
+    },
+  });
+  const membershipMutation = useMutation({
+    mutationFn: (payload: { userId: number; action: "extend" | "set" | "revoke"; days?: number }) =>
+      updateUserMembership(payload.userId, { action: payload.action, days: payload.days }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-users"] });
       queryClient.invalidateQueries({ queryKey: ["admin-user-detail"] });
@@ -208,8 +276,13 @@ function UsersTab() {
                 onSubmit={(payload) =>
                   updateUserMutation.mutate({ userId: selectedUser.id, data: payload })
                 }
-                isSaving={updateUserMutation.isLoading}
+                isSaving={updateUserMutation.isPending}
                 error={updateUserMutation.error}
+                onAdjustMembership={(payload) =>
+                  membershipMutation.mutate({ userId: selectedUser.id, ...payload })
+                }
+                membershipPending={membershipMutation.isPending}
+                membershipError={membershipMutation.error}
               />
             ) : (
               <p className="text-sm text-white/60">
@@ -243,11 +316,17 @@ function UserDetailCard({
   onSubmit,
   isSaving,
   error,
+  onAdjustMembership,
+  membershipPending,
+  membershipError,
 }: {
   user: AdminUser;
   onSubmit: (payload: any) => void;
   isSaving: boolean;
   error: unknown;
+  onAdjustMembership: (payload: { action: "extend" | "set" | "revoke"; days?: number }) => void;
+  membershipPending: boolean;
+  membershipError: unknown;
 }) {
   const [email, setEmail] = useState(user.email);
   const [username, setUsername] = useState(user.username || "");
@@ -276,22 +355,23 @@ function UserDetailCard({
   const lockedAt = user.locked_at ? new Date(user.locked_at) : null;
 
   return (
-    <form
-      className="space-y-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSubmit({
-          email,
-          username,
-          role,
-          language_preference: language,
-          reset_password: password || undefined,
-          is_active: status === "active",
-          locked_reason: status === "suspended" ? lockedReason.trim() || null : null,
-        });
-        setPassword("");
-      }}
-    >
+    <div className="space-y-4">
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmit({
+            email,
+            username,
+            role,
+            language_preference: language,
+            reset_password: password || undefined,
+            is_active: status === "active",
+            locked_reason: status === "suspended" ? lockedReason.trim() || null : null,
+          });
+          setPassword("");
+        }}
+      >
       <div className="flex flex-wrap gap-2 text-xs uppercase tracking-wide text-white/70">
         <span className="chip-soft bg-white/10 text-white">
           #{user.id.toString().padStart(4, "0")}
@@ -397,14 +477,93 @@ function UserDetailCard({
           {extractErrorMessage(error, "Failed to update user")}
         </p>
       ) : null}
-      <button
-        type="submit"
-        className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-[#050E1F]"
-        disabled={isSaving}
-      >
-        {isSaving ? "Saving..." : "Save changes"}
-      </button>
-    </form>
+        <button
+          type="submit"
+          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-[#050E1F]"
+          disabled={isSaving}
+        >
+          {isSaving ? "Saving..." : "Save changes"}
+        </button>
+      </form>
+      <MembershipPanel
+        membership={user.membership}
+        aiQuota={user.ai_explain_quota}
+        onAdjust={onAdjustMembership}
+        isUpdating={membershipPending}
+        error={membershipError}
+      />
+    </div>
+  );
+}
+
+function MembershipPanel({
+  membership,
+  aiQuota,
+  onAdjust,
+  isUpdating,
+  error,
+}: {
+  membership?: AdminUser["membership"];
+  aiQuota?: AdminUser["ai_explain_quota"];
+  onAdjust: (payload: { action: "extend" | "set" | "revoke"; days?: number }) => void;
+  isUpdating: boolean;
+  error: unknown;
+}) {
+  const { t } = useI18n();
+  const expires =
+    membership?.expires_at && membership.is_member
+      ? new Date(membership.expires_at).toLocaleDateString()
+      : null;
+  let status = t("admin.membership.expired");
+  if (membership?.is_member) {
+    status = t("admin.membership.active", { date: expires ?? "—" });
+  } else if (membership?.trial_active) {
+    status = t("admin.membership.trial", { days: membership.trial_days_remaining ?? 0 });
+  }
+  const quotaLimit = aiQuota?.limit;
+  const quotaLabel =
+    quotaLimit === null || quotaLimit === undefined
+      ? t("admin.membership.quotaUnlimited")
+      : t("admin.membership.quota", { used: aiQuota?.used ?? 0, limit: quotaLimit });
+  return (
+    <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 p-4 text-sm text-white/70">
+      <div className="space-y-1">
+        <p className="text-xs uppercase tracking-wide text-white/40">Membership</p>
+        <p className="text-base font-semibold text-white">{status}</p>
+        <p className="text-xs text-white/50">{quotaLabel}</p>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="rounded-xl border border-white/20 px-3 py-1 text-xs text-white/80 hover:border-white/60 disabled:opacity-40"
+          disabled={isUpdating}
+          onClick={() => onAdjust({ action: "extend", days: 30 })}
+        >
+          {t("admin.membership.extend30")}
+        </button>
+        <button
+          type="button"
+          className="rounded-xl border border-white/20 px-3 py-1 text-xs text-white/80 hover:border-white/60 disabled:opacity-40"
+          disabled={isUpdating}
+          onClick={() => onAdjust({ action: "extend", days: 90 })}
+        >
+          {t("admin.membership.extend90")}
+        </button>
+        <button
+          type="button"
+          className="rounded-xl border border-white/20 px-3 py-1 text-xs text-white/80 hover:border-white/60 disabled:opacity-40"
+          disabled={isUpdating}
+          onClick={() => onAdjust({ action: "revoke" })}
+        >
+          {t("admin.membership.revoke")}
+        </button>
+      </div>
+      {error ? (
+        <p className="mt-2 text-xs text-rose-300">
+          {extractErrorMessage(error, t("admin.membership.error"))}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -422,7 +581,9 @@ function LearningSnapshotCard({
     return <p className="text-sm text-white/60">No learning history yet for this user.</p>;
   }
 
-  const lastActive = snapshot.last_active_at ? formatTimestamp(snapshot.last_active_at) : "No activity";
+  const lastActive = snapshot.last_active_at
+    ? formatTimestamp(snapshot.last_active_at) ?? "No activity"
+    : "No activity";
   const accuracy =
     typeof snapshot.accuracy_percent === "number" ? `${snapshot.accuracy_percent.toFixed(1)}%` : "—";
   const avgTime = formatSeconds(snapshot.avg_time_sec);
@@ -491,6 +652,30 @@ function formatSeconds(value?: number | null) {
     return `${seconds}s`;
   }
   return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
+
+function formatLogTimestamp(timestamp?: string) {
+  if (!timestamp) return "—";
+  try {
+    return new Date(timestamp).toLocaleString();
+  } catch {
+    return timestamp;
+  }
+}
+
+function formatDuration(ms?: number | null) {
+  if (typeof ms !== "number" || Number.isNaN(ms)) {
+    return "";
+  }
+  if (ms < 1000) {
+    return `${ms.toFixed(0)} ms`;
+  }
+  const seconds = ms / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)} s`;
+  }
+  const minutes = seconds / 60;
+  return `${minutes.toFixed(1)} min`;
 }
 
 function QuestionTab({
@@ -628,7 +813,7 @@ function QuestionTab({
                 onSubmit={(payload) =>
                   updateQuestionMutation.mutate({ questionId: selectedQuestion.id, data: payload })
                 }
-                isSaving={updateQuestionMutation.isLoading}
+                isSaving={updateQuestionMutation.isPending}
                 error={updateQuestionMutation.error}
               />
             </DashboardCard>
@@ -697,6 +882,17 @@ function QuestionEditor({
   const [figurePreviewUrl, setFigurePreviewUrl] = useState<string | null>(null);
   const [figurePageInput, setFigurePageInput] = useState("");
   const primaryFigure = question.figures?.[0];
+  const [decorations, setDecorations] = useState<StepDirective[]>(
+    parseDecorationsFromMetadata(question.metadata)
+  );
+  const [highlightModal, setHighlightModal] = useState<HighlightModalState | null>(null);
+  const [highlightError, setHighlightError] = useState<string | null>(null);
+  const [sourcePreview, setSourcePreview] = useState<FigureSource | null>(null);
+  const [sourcePreviewLoading, setSourcePreviewLoading] = useState(false);
+  const [sourcePreviewError, setSourcePreviewError] = useState<string | null>(null);
+  const linkedSourceName =
+    question.source?.original_name || question.source?.filename || "—";
+  const linkedPageLabel = question.source_page ?? question.page ?? "—";
 
   const buildMediaUrl = useCallback(
     (url?: string | null) => {
@@ -710,6 +906,29 @@ function QuestionEditor({
     },
     [baseApiUrl]
   );
+
+  const loadSourcePreview = useCallback(async () => {
+    if (!question.source?.id) {
+      setSourcePreview(null);
+      setSourcePreviewError(null);
+      setSourcePreviewLoading(false);
+      return;
+    }
+    setSourcePreviewLoading(true);
+    setSourcePreviewError(null);
+    try {
+      const preview = await fetchQuestionFigureSource(
+        question.id,
+        question.source_page ?? undefined
+      );
+      setSourcePreview(preview);
+    } catch (err) {
+      setSourcePreview(null);
+      setSourcePreviewError(extractErrorMessage(err, "Failed to load PDF preview"));
+    } finally {
+      setSourcePreviewLoading(false);
+    }
+  }, [question.id, question.source?.id, question.source_page]);
 
   useEffect(() => {
     setStemText(question.stem_text ?? "");
@@ -742,7 +961,30 @@ function QuestionEditor({
     );
     setFigureModal(null);
     setFigureError(null);
-  }, [question, buildMediaUrl]);
+    setDecorations(parseDecorationsFromMetadata(question.metadata));
+    setHighlightModal(null);
+    setHighlightError(null);
+    if (question.source?.id) {
+      loadSourcePreview();
+    } else {
+      setSourcePreview(null);
+      setSourcePreviewError(null);
+      setSourcePreviewLoading(false);
+    }
+  }, [question, buildMediaUrl, loadSourcePreview]);
+
+  useEffect(() => {
+    if (!metadataRaw.trim()) {
+      setDecorations([]);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(metadataRaw);
+      setDecorations(parseDecorationsFromMetadata(parsed));
+    } catch {
+      // Ignore invalid JSON to avoid interrupting manual edits.
+    }
+  }, [metadataRaw]);
 
   const computeSelectionFromFigure = useCallback(
     (source?: FigureSource) => {
@@ -779,7 +1021,7 @@ function QuestionEditor({
   );
 
   const openFigureModal = useCallback(async () => {
-    if (!question.source_id) {
+    if (!question.source?.id) {
       setFigureError("Link this question to a PDF source before capturing figures.");
       return;
     }
@@ -806,7 +1048,7 @@ function QuestionEditor({
         prev && prev.questionId === question.id ? { ...prev, loading: false } : prev
       );
     }
-  }, [computeSelectionFromFigure, question.id, question.source_id]);
+  }, [computeSelectionFromFigure, question.id, question.source?.id]);
 
   const closeFigureModal = useCallback(() => {
     setFigureModal(null);
@@ -904,6 +1146,69 @@ function QuestionEditor({
       setFigureDeleting(false);
     }
   }, [primaryFigure, question.id, queryClient]);
+
+  const updateDecorations = useCallback((next: StepDirective[]) => {
+    setDecorations(next);
+    setMetadataRaw((prev) => {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = prev.trim() ? JSON.parse(prev) : {};
+      } catch {
+        parsed = {};
+      }
+      parsed.decorations = sanitizeDecorationsForMetadata(next);
+      return JSON.stringify(parsed, null, 2);
+    });
+  }, []);
+
+  const openHighlightModal = useCallback(async () => {
+    if (!question.source?.id) {
+      setHighlightError("Link this question to a PDF source before annotating underlines.");
+      return;
+    }
+    setHighlightError(null);
+    setHighlightModal({
+      questionId: question.id,
+      loading: true,
+    });
+    try {
+      const source = await fetchQuestionFigureSource(
+        question.id,
+        question.source_page ?? undefined
+      );
+      setHighlightModal((prev) =>
+        prev && prev.questionId === question.id
+          ? { ...prev, source, loading: false, page: source.page }
+          : prev
+      );
+    } catch (err) {
+      setHighlightError(extractErrorMessage(err, "Failed to load PDF page"));
+      setHighlightModal((prev) =>
+        prev && prev.questionId === question.id ? { ...prev, loading: false } : prev
+      );
+    }
+  }, [question.id, question.source?.id, question.source_page]);
+
+  const closeHighlightModal = useCallback(() => {
+    setHighlightModal(null);
+    setHighlightError(null);
+  }, []);
+
+  const handleApplyDecorations = useCallback(
+    (next: StepDirective[]) => {
+      updateDecorations(next);
+      setHighlightModal(null);
+      setHighlightError(null);
+    },
+    [updateDecorations]
+  );
+
+  const handleRemoveDecoration = useCallback(
+    (index: number) => {
+      updateDecorations(decorations.filter((_, idx) => idx !== index));
+    },
+    [decorations, updateDecorations]
+  );
 
   const choiceKeys = useMemo(() => {
     const keys = Object.keys(choices);
@@ -1168,6 +1473,50 @@ function QuestionEditor({
       </section>
 
       <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-white/50">Linked PDF</p>
+            <p className="text-[13px] text-white/60">
+              {linkedSourceName} · Page {linkedPageLabel}
+            </p>
+          </div>
+          {question.source?.id && (
+            <button
+              type="button"
+              className="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-white/80 disabled:opacity-40"
+              onClick={loadSourcePreview}
+              disabled={sourcePreviewLoading}
+            >
+              {sourcePreviewLoading ? "Loading..." : "Reload preview"}
+            </button>
+          )}
+        </div>
+        {question.source?.id ? (
+          sourcePreviewLoading ? (
+            <div className="flex h-48 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-sm text-white/60">
+              Loading preview...
+            </div>
+          ) : sourcePreview ? (
+            <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/30 p-2">
+              <img
+                src={sourcePreview.image}
+                alt="Linked PDF page"
+                className="max-h-[480px] w-full rounded-xl object-contain"
+              />
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-rose-200">
+              {sourcePreviewError || "Preview unavailable."}
+            </div>
+          )
+        ) : (
+          <p className="text-sm text-white/60">
+            Link this question to a PDF source and page to view the preview.
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-3">
         <p className="text-xs uppercase tracking-wide text-white/50">Figure capture</p>
         {figurePreviewUrl ? (
           <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/40 p-2">
@@ -1185,7 +1534,7 @@ function QuestionEditor({
             type="button"
             className="rounded-xl border border-white/30 px-4 py-2 text-sm font-semibold text-white/80 disabled:opacity-40"
             onClick={openFigureModal}
-            disabled={!question.source_id}
+            disabled={!question.source?.id}
           >
             {figurePreviewUrl ? "Re-crop figure" : "Capture figure"}
           </button>
@@ -1200,12 +1549,65 @@ function QuestionEditor({
             </button>
           )}
         </div>
-        {!question.source_id && (
+        {!question.source?.id && (
           <p className="text-xs text-amber-200">
             Link this question to a PDF source and page to enable figure cropping.
           </p>
         )}
         {figureError && !figureModal && <p className="text-xs text-red-400">{figureError}</p>}
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-white/50">Manual underlines</p>
+            <p className="text-[13px] text-white/60">仅支持 Passage 段落中的下划线。</p>
+          </div>
+          <button
+            type="button"
+            className="rounded-xl border border-white/30 px-4 py-2 text-sm font-semibold text-white/80 disabled:opacity-40"
+            onClick={openHighlightModal}
+            disabled={!question.source?.id}
+          >
+            {decorations.length ? "Edit underlines" : "Annotate underlines"}
+          </button>
+        </div>
+        {highlightError && <p className="text-xs text-red-400">{highlightError}</p>}
+        {!question.source?.id && (
+          <p className="text-xs text-amber-200">
+            Link this question to a PDF source/page to enable underline annotation.
+          </p>
+        )}
+        {decorations.length ? (
+          <ul className="space-y-2">
+            {decorations.map((entry, index) => (
+              <li
+                key={`${entry.target}-${entry.choice_id ?? "0"}-${index}`}
+                className="flex items-start justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3"
+              >
+                <div className="text-sm text-white/80">
+                  <p className="font-semibold text-white">{entry.text}</p>
+                  <p className="text-xs text-white/50">
+                    Target: {entry.target === "stem" ? "Question" : entry.target}
+                    {entry.choice_id ? ` · Choice ${entry.choice_id}` : ""}
+                    {entry.action ? ` · ${entry.action}` : ""}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/70 hover:text-white"
+                  onClick={() => handleRemoveDecoration(index)}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-white/60">
+            No manual highlights recorded yet. Use the annotate tool to add them.
+          </p>
+        )}
       </section>
 
       {error ? (
@@ -1339,7 +1741,234 @@ function QuestionEditor({
         </div>
       </div>
     )}
+    {highlightModal && (
+      <HighlightAnnotationModal
+        question={question}
+        stemText={stemText}
+        passageText={passageText}
+        decorations={decorations}
+        modal={highlightModal}
+        onClose={closeHighlightModal}
+        onSave={handleApplyDecorations}
+      />
+    )}
     </>
+  );
+}
+
+type HighlightAnnotationModalProps = {
+  question: AdminQuestion;
+  stemText: string;
+  passageText: string;
+  decorations: StepDirective[];
+  modal: HighlightModalState;
+  onClose: () => void;
+  onSave: (decorations: StepDirective[]) => void;
+};
+
+function HighlightAnnotationModal({
+  question,
+  stemText,
+  passageText,
+  decorations,
+  modal,
+  onClose,
+  onSave,
+}: HighlightAnnotationModalProps) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState<StepDirective[]>(decorations);
+  const [pendingText, setPendingText] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+  const pageLabel = question.source_page ?? question.page ?? "—";
+
+  useEffect(() => {
+    setDraft(decorations);
+  }, [decorations]);
+
+  const handleTextSelection = useCallback((event: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const el = event.currentTarget;
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? 0;
+    if (start === end) return;
+    const snippet = el.value.slice(start, end).trim();
+    if (!snippet) return;
+    setPendingText(snippet);
+    setLocalError(null);
+  }, []);
+
+  const handleAddDecoration = useCallback(() => {
+    const snippet = pendingText.trim();
+    if (!snippet) {
+      setLocalError("请先在文本里选择需要高亮的内容。");
+      return;
+    }
+    const entry: StepDirective = {
+      target: "passage",
+      text: snippet,
+      action: "underline",
+    };
+    setDraft((prev) => [...prev, entry]);
+    setPendingText("");
+    setLocalError(null);
+  }, [pendingText]);
+
+  const handleRemoveDraft = useCallback((index: number) => {
+    setDraft((prev) => prev.filter((_, idx) => idx !== index));
+  }, []);
+
+  const hasChanges = useMemo(() => {
+    if (draft.length !== decorations.length) return true;
+    return draft.some((entry, index) => {
+      const existing = decorations[index];
+      return (
+        entry.target !== existing.target ||
+        entry.text !== existing.text ||
+        entry.action !== existing.action
+      );
+    });
+  }, [draft, decorations]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+      <div className="flex h-full w-full max-w-6xl flex-col rounded-2xl bg-[#050E1F] shadow-2xl max-h-[95vh]">
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
+          <div>
+            <p className="text-base font-semibold text-white">
+              Manual underline · {question.question_uid || `Question #${question.id}`}
+            </p>
+            <p className="text-xs text-white/60">Page {pageLabel}</p>
+          </div>
+          <button
+            className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/70 hover:text-white"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+        <div className="flex-1 space-y-4 overflow-y-auto p-5">
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-white">Linked PDF page preview</p>
+              <p className="text-xs text-white/60">
+                来自题目关联的 PDF 页（不能切换其他页）。
+              </p>
+              <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
+                {modal.loading ? (
+                  <div className="flex h-[320px] items-center justify-center text-sm text-white/60">
+                    Loading page preview...
+                  </div>
+                ) : modal.source ? (
+                  <img
+                    src={modal.source.image}
+                    alt="PDF page preview"
+                    className="max-h-[520px] w-full rounded-xl object-contain"
+                  />
+                ) : (
+                  <div className="flex h-[320px] items-center justify-center text-sm text-rose-200">
+                    Unable to load PDF preview.
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
+              <div>
+                <p className="text-sm font-semibold text-white">Select passage text</p>
+                <p className="text-xs text-white/60">仅支持 Passage 中的下划线。</p>
+              </div>
+              <label className="text-xs uppercase tracking-wide text-white/40">
+                Passage
+                <textarea
+                  className="mt-1 h-48 w-full rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white"
+                  value={passageText}
+                  readOnly
+                  onSelect={handleTextSelection}
+                />
+              </label>
+            </div>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-[1.1fr_minmax(0,1fr)]">
+            <div className="space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <p className="text-sm font-semibold text-white">New underline</p>
+              <p className="text-xs text-white/60">
+                SAT official passages只会在原文中以下划线标注重点。请在上方 Passage 文本中拖拽
+                选择后点击“Add underline”。
+              </p>
+              <label className="text-xs uppercase tracking-wide text-white/50">
+                Selected text
+                <textarea
+                  className="mt-1 w-full rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-sm text-white"
+                  rows={3}
+                  value={pendingText}
+                  onChange={(e) => setPendingText(e.target.value)}
+                  placeholder="Select text above or paste content here"
+                />
+              </label>
+              {localError && <p className="text-xs text-red-400">{localError}</p>}
+              <button
+                type="button"
+                className="rounded-xl border border-white/20 px-3 py-2 text-sm font-semibold text-white/80"
+                onClick={handleAddDecoration}
+              >
+                Add underline
+              </button>
+              <p className="text-xs text-white/50">
+                记得在关闭窗口后点击“Save question”保存最终更改。
+              </p>
+            </div>
+            <div className="space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <p className="text-sm font-semibold text-white">
+                Highlights ({draft.length})
+              </p>
+              {draft.length ? (
+                <ul className="space-y-2 text-sm text-white/80">
+                  {draft.map((entry, idx) => (
+                    <li
+                      key={`${entry.target}-${entry.choice_id ?? "none"}-${idx}`}
+                      className="rounded-xl border border-white/10 bg-black/30 p-3"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-white">{entry.text}</p>
+                          <p className="text-xs text-white/50">
+                            {entry.target === "stem" ? "Question" : entry.target}
+                            {entry.choice_id ? ` · Choice ${entry.choice_id}` : ""}
+                            {entry.action ? ` · ${entry.action}` : ""}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/70 hover:text-white"
+                          onClick={() => handleRemoveDraft(idx)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-white/60">No annotations yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap justify-end gap-3 border-t border-white/10 px-5 py-4">
+          <button
+            className="rounded-xl border border-white/20 px-4 py-2 text-sm text-white/80"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-[#050E1F] disabled:opacity-50"
+            onClick={() => onSave(draft)}
+            disabled={!hasChanges}
+          >
+            Save highlights
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1351,6 +1980,9 @@ function CollectionsTab({
   const [page, setPage] = useState(1);
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const [detailPage, setDetailPage] = useState(1);
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<number[]>([]);
+  const [deleteSourceError, setDeleteSourceError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const sourcesQuery = useQuery({
     queryKey: ["admin-sources", page],
@@ -1363,6 +1995,7 @@ function CollectionsTab({
 
   useEffect(() => {
     setDetailPage(1);
+    setSelectedQuestionIds([]);
   }, [selectedSourceId]);
 
   const sourceDetailQuery = useQuery({
@@ -1372,11 +2005,82 @@ function CollectionsTab({
         ? getAdminSourceDetail(selectedSourceId, { page: detailPage, per_page: DETAIL_PAGE_SIZE })
         : Promise.resolve(null),
     enabled: Boolean(selectedSourceId),
-    keepPreviousData: true,
   });
 
   const detailPagination = sourceDetailQuery.data?.pagination;
   const hasDetailPagination = detailPagination && detailPagination.pages > 1;
+  const detailQuestions = sourceDetailQuery.data?.questions ?? [];
+
+  useEffect(() => {
+    setSelectedQuestionIds([]);
+  }, [detailPage, selectedSourceId]);
+
+  const deleteQuestionsMutation = useMutation({
+    mutationFn: (ids: number[]) => deleteQuestionsBulk(ids),
+    onSuccess: () => {
+      setSelectedQuestionIds([]);
+      queryClient.invalidateQueries({ queryKey: ["admin-source-detail"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-sources"] });
+    },
+  });
+
+  const deleteSourceMutation = useMutation({
+    mutationFn: (sourceId: number) => deleteSource(sourceId),
+    onSuccess: () => {
+      setSelectedSourceId(null);
+      setDeleteSourceError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin-sources"] });
+    },
+    onError: (error: unknown) => {
+      setDeleteSourceError(extractErrorMessage(error, "Failed to delete collection."));
+    },
+  });
+
+  const toggleQuestionSelection = (questionId: number) => {
+    setSelectedQuestionIds((prev) =>
+        prev.includes(questionId)
+        ? prev.filter((id) => id !== questionId)
+        : [...prev, questionId]
+    );
+  };
+
+  const allVisibleSelected =
+    detailQuestions.length > 0 &&
+    detailQuestions.every((question) => selectedQuestionIds.includes(question.id));
+
+  const handleToggleAll = () => {
+    if (allVisibleSelected) {
+      setSelectedQuestionIds([]);
+      return;
+    }
+    setSelectedQuestionIds(detailQuestions.map((question) => question.id));
+  };
+
+  const handleBulkDelete = () => {
+    if (!selectedQuestionIds.length) {
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete ${selectedQuestionIds.length} selected question(s)? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    deleteQuestionsMutation.mutate(selectedQuestionIds);
+  };
+
+  const handleDeleteCollection = () => {
+    if (!selectedSourceId) return;
+    if (
+      !window.confirm(
+        "Delete this PDF collection permanently? This will remove the collection record."
+      )
+    ) {
+      return;
+    }
+    deleteSourceMutation.mutate(selectedSourceId);
+  };
 
   return (
     <div className="space-y-4">
@@ -1443,22 +2147,92 @@ function CollectionsTab({
               <p className="text-sm text-white/60">
                 Total questions: {sourceDetailQuery.data.source.question_count ?? "—"}
               </p>
+              <div className="mt-3 flex items-center justify-between gap-4">
+                <p className="text-xs text-white/50">
+                  {selectedQuestionIds.length
+                    ? `${selectedQuestionIds.length} selected`
+                    : "Select questions to delete"}
+                </p>
+                <div className="flex items-center gap-2">
+                  {selectedSourceId ? (
+                    <Link
+                      href={`/practice?sourceId=${selectedSourceId}`}
+                      target="_blank"
+                      className="rounded-full border border-white/30 px-3 py-1 text-xs font-semibold text-white/80 hover:border-white/60"
+                    >
+                      Test this collection
+                    </Link>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/70 hover:border-white/50"
+                    onClick={handleToggleAll}
+                    disabled={!detailQuestions.length}
+                  >
+                    {allVisibleSelected ? "Deselect page" : "Select page"}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-full border border-rose-500/60 px-3 py-1 text-xs font-semibold text-rose-100 hover:bg-rose-500/10 disabled:opacity-40"
+                    disabled={!selectedQuestionIds.length || deleteQuestionsMutation.isPending}
+                    onClick={handleBulkDelete}
+                  >
+                    {deleteQuestionsMutation.isPending
+                      ? "Deleting..."
+                      : `Delete selected (${selectedQuestionIds.length})`}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-full border border-rose-300/60 px-3 py-1 text-xs font-semibold text-rose-100 hover:bg-rose-500/10 disabled:opacity-40"
+                    disabled={
+                      !!sourceDetailQuery.data.source.question_count ||
+                      deleteSourceMutation.isPending
+                    }
+                    onClick={handleDeleteCollection}
+                  >
+                    {deleteSourceMutation.isPending ? "Deleting..." : "Delete collection"}
+                  </button>
+                </div>
+              </div>
               <div className="mt-3 overflow-auto rounded-xl border border-white/10">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-white/5 text-xs uppercase tracking-wide text-white/60">
                     <tr>
+                      <th className="px-4 py-3 w-10">
+                        <input
+                          type="checkbox"
+                          className="scale-110 accent-white"
+                          checked={detailQuestions.length > 0 && allVisibleSelected}
+                          onChange={handleToggleAll}
+                          disabled={!detailQuestions.length}
+                        />
+                      </th>
                       <th className="px-4 py-3">Question</th>
                       <th className="px-4 py-3">Section</th>
                       <th className="px-4 py-3">Difficulty</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sourceDetailQuery.data.questions.map((question) => (
+                    {detailQuestions.map((question) => {
+                      const checked = selectedQuestionIds.includes(question.id);
+                      return (
                       <tr
                         key={question.id}
                         className="border-t border-white/5 hover:bg-white/5 cursor-pointer"
                         onClick={() => onJumpToQuestion(question.id)}
                       >
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            className="scale-110 accent-white"
+                            checked={checked}
+                            onChange={(event) => {
+                              event.stopPropagation();
+                              toggleQuestionSelection(question.id);
+                            }}
+                            onClick={(event) => event.stopPropagation()}
+                          />
+                        </td>
                         <td className="px-4 py-3 text-white">
                           {question.question_uid || `#${question.id}`}
                         </td>
@@ -1467,7 +2241,7 @@ function CollectionsTab({
                           {question.difficulty_level ?? "—"}
                         </td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>
@@ -1477,6 +2251,14 @@ function CollectionsTab({
                   pages={detailPagination!.pages || 1}
                   onPageChange={setDetailPage}
                 />
+              ) : null}
+              {deleteQuestionsMutation.isError ? (
+                <p className="mt-2 text-xs text-rose-300">
+                  {extractErrorMessage(deleteQuestionsMutation.error, "Failed to delete questions.")}
+                </p>
+              ) : null}
+              {deleteSourceError ? (
+                <p className="mt-1 text-xs text-rose-300">{deleteSourceError}</p>
               ) : null}
             </DashboardCard>
           ) : (
@@ -1493,8 +2275,878 @@ function CollectionsTab({
   );
 }
 
+function QuestionCategoriesTab({
+  onJumpToQuestion,
+}: {
+  onJumpToQuestion: (questionId: number) => void;
+}) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+
+  const categoriesQuery = useQuery({
+    queryKey: ["admin-question-categories"],
+    queryFn: getQuestionCategories,
+  });
+  const categories = categoriesQuery.data ?? [];
+
+  useEffect(() => {
+    if (categories.length && !selectedKey) {
+      setSelectedKey(categories[0].key);
+      setPage(1);
+    } else if (selectedKey && categories.every((cat) => cat.key !== selectedKey)) {
+      setSelectedKey(categories[0]?.key ?? null);
+      setPage(1);
+    }
+  }, [categories, selectedKey]);
+
+  const questionsQuery = useQuery({
+    queryKey: ["admin-category-questions", selectedKey, page],
+    queryFn: () =>
+      selectedKey ? getAdminQuestions({ page, per_page: PAGE_SIZE, skill_tag: selectedKey }) : Promise.resolve(null),
+    enabled: Boolean(selectedKey),
+  });
+
+  const selectedCategory = categories.find((cat) => cat.key === selectedKey) || null;
+  const questions = questionsQuery.data?.items ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 lg:grid-cols-[0.9fr_2fr]">
+        <DashboardCard
+          title="Question categories"
+          subtitle="Browse skill tags and inspect the questions they contain."
+        >
+          {categoriesQuery.isLoading ? (
+            <p className="py-6 text-center text-white/60">Loading categories…</p>
+          ) : categories.length ? (
+            <div className="space-y-2">
+              {categories.map((category) => {
+                const isActive = selectedKey === category.key;
+                const rwCount = category.section_counts?.RW ?? 0;
+                const mathCount = category.section_counts?.Math ?? 0;
+                return (
+                  <button
+                    key={category.key}
+                    className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                      isActive ? "border-white bg-white/10" : "border-white/10 hover:border-white/30"
+                    }`}
+                    onClick={() => {
+                      setSelectedKey(category.key);
+                      setPage(1);
+                    }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-semibold text-white">{category.label}</p>
+                        <p className="text-xs text-white/60">{category.domain}</p>
+                      </div>
+                      <span className="chip-soft bg-white/10 text-white">
+                        {category.question_count} question{category.question_count === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex gap-2 text-xs text-white/60">
+                      <span className="chip-soft bg-blue-400/10 text-blue-200">RW {rwCount}</span>
+                      <span className="chip-soft bg-emerald-400/10 text-emerald-200">Math {mathCount}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="py-6 text-center text-white/60">No categories found.</p>
+          )}
+        </DashboardCard>
+        <DashboardCard
+          title={selectedCategory ? selectedCategory.label : "Questions"}
+          subtitle={
+            selectedCategory
+              ? `Showing questions tagged with ${selectedCategory.label}`
+              : "Select a category to load its questions."
+          }
+        >
+          {selectedCategory ? (
+            <div className="space-y-3">
+              <div className="overflow-auto rounded-xl border border-white/10">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-white/5 text-xs uppercase tracking-wide text-white/60">
+                    <tr>
+                      <th className="px-4 py-3">ID</th>
+                      <th className="px-4 py-3">UID</th>
+                      <th className="px-4 py-3">Section</th>
+                      <th className="px-4 py-3">Skill tags</th>
+                      <th className="px-4 py-3">Difficulty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {questionsQuery.isLoading ? (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-6 text-center text-white/60">
+                          Loading questions…
+                        </td>
+                      </tr>
+                    ) : questions.length ? (
+                      questions.map((question) => (
+                        <tr
+                          key={question.id}
+                          className="cursor-pointer border-t border-white/5 hover:bg-white/5"
+                          onClick={() => onJumpToQuestion(question.id)}
+                        >
+                          <td className="px-4 py-3 text-white">{question.id}</td>
+                          <td className="px-4 py-3 text-white/80">{question.question_uid || "—"}</td>
+                          <td className="px-4 py-3 text-white/80">{question.section || "—"}</td>
+                          <td className="px-4 py-3 text-white/70">
+                            {(question.skill_tags || []).slice(0, 2).join(", ") || "—"}
+                          </td>
+                          <td className="px-4 py-3 text-white/70">
+                            {question.difficulty_level != null ? question.difficulty_level : "—"}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-6 text-center text-white/60">
+                          No questions in this category.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {questionsQuery.data ? (
+                <PaginationControls
+                  page={questionsQuery.data.page}
+                  pages={Math.max(
+                    Math.ceil((questionsQuery.data.total || 0) / (questionsQuery.data.per_page || PAGE_SIZE)),
+                    1
+                  )}
+                  onPageChange={setPage}
+                />
+              ) : null}
+            </div>
+          ) : (
+            <p className="py-6 text-center text-white/60">Select a category to view its questions.</p>
+          )}
+        </DashboardCard>
+      </div>
+    </div>
+  );
+}
+
 function ImportTab() {
   return <ImportWorkspace variant="embedded" />;
+}
+
+function AIPaperGeneratorTab() {
+  const OPENAI_LOG_STORAGE_KEY = "admin-ai-paper-openai-logs";
+  const [name, setName] = useState("");
+  const [page, setPage] = useState(1);
+  const queryClient = useQueryClient();
+  const [openaiLogs, setOpenaiLogs] = useState<OpenAILogEntry[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [logHeartbeatMap, setLogHeartbeatMap] = useState<Record<number, number>>({});
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteTargetId, setDeleteTargetId] = useState<number | null>(null);
+  const jobsQuery = useQuery<PaginatedResponse<AIPaperJob>>({
+    queryKey: ["admin-ai-papers", page],
+    queryFn: () => listAIPaperJobs({ page, per_page: PAGE_SIZE }),
+    refetchInterval: 2000,
+    refetchIntervalInBackground: true,
+  });
+  const jobs = jobsQuery.data?.items ?? [];
+  const deleteMutation = useMutation({
+    mutationFn: (jobId: number) => deleteAIPaperJob(jobId),
+    onMutate: (jobId) => {
+      setDeleteTargetId(jobId);
+      setDeleteError(null);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-ai-papers"] });
+    },
+    onError: (error: unknown) => {
+      setDeleteError(extractErrorMessage(error, "Failed to delete AI paper job."));
+    },
+    onSettled: () => {
+      setDeleteTargetId(null);
+    },
+  });
+  useEffect(() => {
+    const now = Date.now();
+    setLogHeartbeatMap((prev) => {
+      const changed: Record<number, number> = {};
+      jobsQuery.data?.items?.forEach((job) => {
+        if (prev[job.id] === undefined && job.created_at) {
+          const createdMs = new Date(job.created_at).getTime();
+          if (!Number.isNaN(createdMs)) {
+            changed[job.id] = createdMs;
+          }
+        }
+      });
+      if (Object.keys(changed).length === 0) {
+        return prev;
+      }
+      return { ...prev, ...changed };
+    });
+  }, [jobsQuery.data?.items]);
+
+  const createMutation = useMutation({
+    mutationFn: (payload: { name?: string }) => createAIPaperJob(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-ai-papers"] });
+      setName("");
+      jobsQuery.refetch();
+    },
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: (jobId: number) => resumeAIPaperJob(jobId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-ai-papers"] });
+    },
+  });
+
+  const loadOpenaiLogs = useCallback(async () => {
+    try {
+      setLogsLoading(true);
+      setLogsError(null);
+      const data = await fetchOpenaiLogs(OPENAI_LOG_LIMIT);
+      const logs = Array.isArray(data?.logs) ? (data.logs as OpenAILogEntry[]) : [];
+      const trimmed = logs.slice(0, OPENAI_LOG_LIMIT);
+      setOpenaiLogs(trimmed);
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem(OPENAI_LOG_STORAGE_KEY, JSON.stringify(trimmed));
+      }
+      if (logs.length) {
+        setLogHeartbeatMap((prev) => {
+          const next = { ...prev };
+          let changed = false;
+          logs.forEach((entry) => {
+            if (!entry?.job_id || !entry.timestamp) {
+              return;
+            }
+            const ts = new Date(entry.timestamp).getTime();
+            if (!Number.isNaN(ts)) {
+              next[entry.job_id] = ts;
+              changed = true;
+            }
+          });
+          return changed ? next : prev;
+        });
+      }
+    } catch (error: unknown) {
+      setLogsError(extractErrorMessage(error, "Failed to load OpenAI logs"));
+    } finally {
+      setLogsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const cached = sessionStorage.getItem(OPENAI_LOG_STORAGE_KEY);
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached) as OpenAILogEntry[];
+          if (Array.isArray(parsed) && parsed.length) {
+            setOpenaiLogs(parsed.slice(0, OPENAI_LOG_LIMIT));
+          }
+        } catch {
+          sessionStorage.removeItem(OPENAI_LOG_STORAGE_KEY);
+        }
+      }
+    }
+    loadOpenaiLogs();
+  }, [loadOpenaiLogs]);
+
+  useEffect(() => {
+    const token = getClientToken();
+    if (!token) {
+      return undefined;
+    }
+    const baseUrl = env.apiBaseUrl.replace(/\/$/, "");
+    const url = new URL("/api/admin/questions/imports/events", baseUrl);
+    url.searchParams.set("token", token);
+    const source = new EventSource(url.toString());
+
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload?.type === "openai_log" && payload?.payload) {
+          const entry = payload.payload as OpenAILogEntry;
+          setOpenaiLogs((prev) => {
+            const next = [entry, ...prev].slice(0, OPENAI_LOG_LIMIT);
+            if (typeof window !== "undefined") {
+              sessionStorage.setItem(OPENAI_LOG_STORAGE_KEY, JSON.stringify(next));
+            }
+            return next;
+          });
+          if (entry.job_id && entry.timestamp) {
+            const ts = new Date(entry.timestamp).getTime();
+            if (!Number.isNaN(ts)) {
+              setLogHeartbeatMap((prev) => ({
+                ...prev,
+                [entry.job_id as number]: ts,
+              }));
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to parse OpenAI log event", err);
+      }
+    };
+    source.onerror = () => {
+      source.close();
+    };
+
+    return () => {
+      source.close();
+    };
+  }, []);
+
+  const pagination = jobsQuery.data?.pagination;
+
+  const handleCreate = (event: React.FormEvent) => {
+    event.preventDefault();
+    const trimmed = name.trim();
+    createMutation.mutate({ name: trimmed || undefined });
+  };
+
+  const aiLogs = useMemo(
+    () =>
+      openaiLogs.filter((entry) =>
+        (entry.purpose || "").toLowerCase().includes("ai-paper")
+      ),
+    [openaiLogs]
+  );
+
+  return (
+    <div className="space-y-4">
+      <DashboardCard
+        title="AI Paper Studio"
+        subtitle="Create fully structured SAT mock sets with one click. The generator will follow the Digital SAT blueprint and attach the output as a new PDF Collection."
+      >
+        <form className="flex flex-col gap-3 lg:flex-row" onSubmit={handleCreate}>
+          <input
+            className="flex-1 rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40"
+            placeholder="Custom paper name (optional)"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+          <button
+            className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-[#050E1F]"
+            disabled={createMutation.isPending}
+          >
+            {createMutation.isPending ? "Generating…" : "Create AI Paper"}
+          </button>
+        </form>
+        <p className="mt-4 text-sm leading-relaxed text-white/70">
+          Each paper contains 2 Reading &amp; Writing modules (27 questions each) and 2 Math modules (22 questions each).
+          The system precomputes module blueprints (difficulty, passage requirements, figure slots) before calling the
+          OpenAI pipelines for passage, problem, answer, explanation, and figure generation.
+        </p>
+      </DashboardCard>
+
+      <DashboardCard
+        title="Generation history"
+        subtitle="Track the most recent AI paper jobs, monitor progress, and jump into their resulting collections."
+      >
+        <div className="overflow-auto rounded-xl border border-white/10">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-white/5 text-xs uppercase tracking-wide text-white/60">
+              <tr>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Stage & progress</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Source</th>
+                <th className="px-4 py-3">Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobsQuery.isLoading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-center text-white/60">
+                    Loading jobs...
+                  </td>
+                </tr>
+              ) : jobs.length ? (
+                jobs.map((job: AIPaperJob) => {
+                  const stageLabel = getJobStageLabel(job);
+                  const progressPercent = Math.min(100, Math.max(0, job.progress));
+                  const totalSlotsLabel =
+                    job.total_tasks > 0
+                      ? `${job.completed_tasks}/${job.total_tasks} slots`
+                      : "—";
+                  const lastLogMs =
+                    logHeartbeatMap[job.id] ??
+                    (job.created_at ? new Date(job.created_at).getTime() : Date.now());
+                  const now = Date.now();
+                  const canResume =
+                    job.status !== "completed" &&
+                    !resumeMutation.isPending &&
+                    lastLogMs !== undefined &&
+                    now - lastLogMs > 120_000;
+                  return (
+                    <tr key={job.id} className="border-t border-white/5 align-top">
+                      <td className="px-4 py-3 font-semibold text-white">{job.name}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1.5">
+                          <div className="flex items-center justify-between text-xs text-white/60">
+                            <span>{stageLabel}</span>
+                            <span>{progressPercent.toFixed(0)}%</span>
+                          </div>
+                          <div className="h-2 w-full rounded-full bg-white/10">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-sky-400 via-indigo-400 to-fuchsia-400 shadow-lg transition-[width]"
+                              style={{ width: `${progressPercent}%` }}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between text-[11px] text-white/45">
+                            <span>{job.status_message || "..."}</span>
+                            <span>{totalSlotsLabel}</span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                              job.status === "completed"
+                                ? "bg-emerald-400/20 text-emerald-300"
+                                : job.status === "running"
+                                ? "bg-sky-400/20 text-sky-200"
+                                : job.status === "cancelling"
+                                ? "bg-amber-400/20 text-amber-200"
+                                : job.status === "cancelled"
+                                ? "bg-amber-500/20 text-amber-200"
+                                : job.status === "failed"
+                                ? "bg-rose-500/20 text-rose-200"
+                                : "bg-white/10 text-white/70"
+                            }`}
+                          >
+                            {job.status}
+                          </span>
+                          {job.status !== "completed" && (
+                            <button
+                              type="button"
+                              className="rounded-full border border-white/30 px-2 py-0.5 text-xs text-white/80 hover:border-white/60 disabled:opacity-40"
+                              onClick={() => resumeMutation.mutate(job.id)}
+                              disabled={!canResume}
+                            >
+                              {resumeMutation.isPending ? "Resuming..." : "Resume"}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="rounded-full border border-red-500/40 px-2 py-0.5 text-xs text-red-200 hover:border-red-400 disabled:opacity-40"
+                            onClick={() => {
+                              const confirmMessage =
+                                job.status === "running"
+                                  ? `Job "${job.name}" is still running. Deleting it will immediately cancel generation and remove all linked questions. Continue?`
+                                  : `Delete "${job.name}"? This removes the generated collection and all linked questions.`;
+                              if (window.confirm(confirmMessage)) {
+                                deleteMutation.mutate(job.id);
+                              }
+                            }}
+                            disabled={deleteMutation.isPending}
+                          >
+                            {deleteMutation.isPending && deleteTargetId === job.id
+                              ? "Deleting…"
+                              : job.status === "running"
+                              ? "Force delete"
+                              : "Delete"}
+                          </button>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        {job.source_id ? (
+                          <span className="text-white">#{job.source_id}</span>
+                        ) : (
+                          <span className="text-white/40">Pending</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-white/60">
+                        {job.created_at ? new Date(job.created_at).toLocaleString() : "—"}
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-center text-white/60">
+                    No jobs yet. Kick off your first AI-generated paper using the form above.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {deleteError && (
+          <p className="mt-3 text-sm text-rose-300">{deleteError}</p>
+        )}
+        {pagination && (
+          <div className="mt-4 flex items-center justify-between text-sm text-white/70">
+            <button
+              className="rounded-full border border-white/20 px-3 py-1 disabled:border-white/5 disabled:text-white/30"
+              onClick={() => setPage((prev) => Math.max(prev - 1, 1))}
+              disabled={!pagination.has_prev}
+            >
+              Previous
+            </button>
+            <span>
+              Page {pagination.page} / {Math.max(pagination.pages, 1)}
+            </span>
+            <button
+              className="rounded-full border border-white/20 px-3 py-1 disabled:border-white/5 disabled:text-white/30"
+              onClick={() => setPage((prev) => (pagination.has_next ? prev + 1 : prev))}
+              disabled={!pagination.has_next}
+            >
+              Next
+            </button>
+          </div>
+        )}
+      </DashboardCard>
+
+      <DashboardCard
+        title="OpenAI API Logs"
+        subtitle={`AI paper generation calls · showing ${aiLogs.length} entr${
+          aiLogs.length === 1 ? "y" : "ies"
+        }`}
+      >
+        <div className="mb-3 flex flex-wrap items-center justify-between text-xs text-white/60">
+          <span>
+            Includes only log entries whose purpose contains <code>ai-paper</code>
+          </span>
+          <div className="flex items-center gap-2">
+            {logsError && <span className="text-red-400">{logsError}</span>}
+            <button
+              className="rounded-xl border border-white/20 px-3 py-1 text-xs text-white/80"
+              onClick={loadOpenaiLogs}
+              disabled={logsLoading}
+            >
+              {logsLoading ? "Loading..." : "Refresh"}
+            </button>
+          </div>
+        </div>
+        {aiLogs.length === 0 && !logsLoading ? (
+          <p className="text-sm text-white/50">
+            No AI paper logs yet. Start or resume a job to see real-time activity.
+          </p>
+        ) : (
+          <div className="space-y-2 overflow-auto pr-1 text-xs text-white/70 max-h-[60vh] min-h-[240px]">
+            {aiLogs.map((entry, index) => (
+              <div
+                key={`${entry.timestamp}-${index}`}
+                className="rounded-xl border border-white/10 bg-black/30 px-3 py-2"
+              >
+                <div className="flex items-center justify-between text-white">
+                  <span>{formatLogTimestamp(entry.timestamp)}</span>
+                  <span className="text-[10px] uppercase tracking-wide text-white/70">
+                    {entry.kind}
+                  </span>
+                </div>
+                <p className="text-[11px] text-white/70">
+                  Job #{entry.job_id ?? "—"} · {entry.purpose || entry.stage || "AI paper"}
+                </p>
+                <p className="text-[11px] text-white/60">
+                  {entry.attempt !== undefined
+                    ? `Attempt ${entry.attempt}/${entry.max_attempts ?? "?"}`
+                    : "Attempt —"}
+                  {entry.model ? ` · ${entry.model}` : ""}
+                  {entry.status_code ? ` · HTTP ${entry.status_code}` : ""}
+                  {entry.duration_ms !== undefined && entry.duration_ms !== null
+                    ? ` · ${formatDuration(entry.duration_ms)}`
+                    : ""}
+                </p>
+                {entry.message && (
+                  <p className="text-[11px] text-white/60">Message: {entry.message}</p>
+                )}
+                {entry.error && (
+                  <p className="text-[11px] text-red-300 break-words">Error: {entry.error}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </DashboardCard>
+    </div>
+  );
+}
+
+function getJobStageLabel(job: AIPaperJob): string {
+  const fallback = job.stage
+    ? job.stage.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())
+    : job.status?.replace(/_/g, " ") ?? "Queued";
+
+  if (!job.stage) {
+    return STAGE_LABELS[job.status ?? "pending"] ?? fallback;
+  }
+  if (STAGE_LABELS[job.stage]) {
+    return STAGE_LABELS[job.stage];
+  }
+  if (job.stage.startsWith("module_")) {
+    const configWithBlueprint = job.config as {
+      blueprint?: { modules?: Array<{ code: string; label: string }> };
+    };
+    const matched = configWithBlueprint.blueprint?.modules?.find(
+      (module) => `module_${module.code?.toLowerCase()}` === job.stage
+    );
+    if (matched?.label) {
+      return matched.label;
+    }
+    const code = job.stage.replace("module_", "").toUpperCase();
+    return `Module ${code}`;
+  }
+  return fallback;
+}
+
+type MembershipStatusFilter = "pending" | "approved" | "rejected" | "all";
+
+function MembershipTab() {
+  const [status, setStatus] = useState<MembershipStatusFilter>("pending");
+  const [page, setPage] = useState(1);
+
+  const ordersQuery = useQuery({
+    queryKey: ["admin-membership-orders", page, status],
+    queryFn: () =>
+      listMembershipOrdersAdmin({
+        page,
+        per_page: PAGE_SIZE,
+        status: status === "all" ? undefined : status,
+      }),
+  });
+
+  const decisionMutation = useMutation({
+    mutationFn: (payload: { id: number; action: "approve" | "reject"; note?: string }) =>
+      decideMembershipOrder(payload.id, { action: payload.action, note: payload.note }),
+    onSuccess: () => {
+      ordersQuery.refetch();
+    },
+  });
+
+  const orders = ordersQuery.data?.orders ?? [];
+  const pagination = ordersQuery.data?.pagination;
+
+  const statusOptions: { value: MembershipStatusFilter; label: string }[] = [
+    { value: "pending", label: "Pending" },
+    { value: "approved", label: "Approved" },
+    { value: "rejected", label: "Rejected" },
+    { value: "all", label: "All" },
+  ];
+
+  function formatOrderPrice(order: MembershipOrder) {
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: order.currency || "USD",
+      }).format(order.price_cents / 100);
+    } catch {
+      return `$${order.price_cents / 100}`;
+    }
+  }
+
+  function handleDecision(orderId: number, action: "approve" | "reject") {
+    const note =
+      action === "reject"
+        ? window.prompt("Add a note for the user? (optional)") || undefined
+        : undefined;
+    decisionMutation.mutate({ id: orderId, action, note });
+  }
+
+  return (
+    <div className="space-y-4">
+      <DashboardCard title="Membership orders" subtitle="Review and approve manual subscription requests.">
+        <div className="flex flex-wrap gap-2">
+          {statusOptions.map((option) => (
+            <button
+              key={option.value}
+              className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                status === option.value
+                  ? "bg-white text-[#050E1F]"
+                  : "border border-white/30 text-white/70 hover:border-white/50"
+              }`}
+              onClick={() => {
+                setStatus(option.value as typeof status);
+                setPage(1);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 overflow-x-auto rounded-2xl border border-white/10">
+          <table className="min-w-full text-left text-sm">
+            <thead>
+              <tr className="text-xs uppercase tracking-wide text-white/50">
+                <th className="px-4 py-3">Order</th>
+                <th className="px-4 py-3">User</th>
+                <th className="px-4 py-3">Plan</th>
+                <th className="px-4 py-3">Price</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ordersQuery.isLoading ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-center text-white/60">
+                    Loading orders...
+                  </td>
+                </tr>
+              ) : orders.length ? (
+                orders.map((order) => (
+                  <tr key={order.id} className="border-t border-white/10">
+                    <td className="px-4 py-3">
+                      <div className="text-white font-semibold">#{order.id}</div>
+                      <div className="text-xs text-white/50">
+                        {new Date(order.created_at).toLocaleString()}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-white">{order.user?.email ?? "—"}</p>
+                      <p className="text-xs text-white/50">{order.user?.username ?? "—"}</p>
+                    </td>
+                    <td className="px-4 py-3 text-white">
+                      {order.plan === "monthly"
+                        ? "Monthly"
+                        : "Quarterly"}
+                    </td>
+                    <td className="px-4 py-3 text-white/80">{formatOrderPrice(order)}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                          order.status === "pending"
+                            ? "bg-amber-500/20 text-amber-100"
+                            : order.status === "approved"
+                            ? "bg-emerald-500/20 text-emerald-100"
+                            : "bg-rose-500/20 text-rose-100"
+                        }`}
+                      >
+                        {order.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {order.status === "pending" ? (
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            className="rounded-full border border-emerald-400/60 px-3 py-1 text-xs text-emerald-100 hover:bg-emerald-500/10 disabled:opacity-40"
+                            onClick={() => handleDecision(order.id, "approve")}
+                            disabled={decisionMutation.isPending}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-full border border-rose-400/60 px-3 py-1 text-xs text-rose-100 hover:bg-rose-500/10 disabled:opacity-40"
+                            onClick={() => handleDecision(order.id, "reject")}
+                            disabled={decisionMutation.isPending}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-white/40">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-center text-white/60">
+                    No orders found.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {pagination && (
+          <PaginationControls
+            page={pagination.page}
+            pages={pagination.pages || 1}
+            onPageChange={setPage}
+          />
+        )}
+        {decisionMutation.isError && (
+          <p className="mt-3 text-xs text-rose-300">
+            {extractErrorMessage(decisionMutation.error, "Failed to update order.")}
+          </p>
+        )}
+      </DashboardCard>
+    </div>
+  );
+}
+
+function GeneralSettingsTab() {
+  const { t } = useI18n();
+  const [emailInput, setEmailInput] = useState<string | null>(null);
+  const [localMessage, setLocalMessage] = useState<string | null>(null);
+
+  const settingsQuery = useQuery({
+    queryKey: ["admin-general-settings"],
+    queryFn: getGeneralSettings,
+  });
+
+  useEffect(() => {
+    if (settingsQuery.data && emailInput === null) {
+      setEmailInput(settingsQuery.data.suggestion_email ?? "");
+    }
+  }, [settingsQuery.data, emailInput]);
+
+  const updateMutation = useMutation({
+    mutationFn: (payload: GeneralSettings) => updateGeneralSettings(payload),
+    onSuccess: (settings) => {
+      setLocalMessage(t("admin.generalSettings.saved"));
+      setEmailInput(settings.suggestion_email ?? "");
+    },
+  });
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    setLocalMessage(null);
+    updateMutation.mutate({ suggestion_email: (emailInput ?? "").trim() || null });
+  };
+
+  return (
+    <div className="space-y-4">
+      <DashboardCard
+        title={t("admin.generalSettings.title")}
+        subtitle={t("admin.generalSettings.subtitle")}
+      >
+        <form className="space-y-4 text-sm text-white" onSubmit={handleSubmit}>
+          <div>
+            <label className="text-xs uppercase tracking-wide text-white/50">
+              {t("admin.generalSettings.emailLabel")}
+            </label>
+            <input
+              type="email"
+              value={emailInput ?? settingsQuery.data?.suggestion_email ?? ""}
+              onChange={(e) => setEmailInput(e.target.value)}
+              placeholder="support@example.com"
+              className="mt-1 w-full rounded-2xl border border-white/10 bg-transparent px-4 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/60 focus:outline-none"
+            />
+            <p className="mt-1 text-xs text-white/50">
+              {t("admin.generalSettings.emailHelper")}
+            </p>
+          </div>
+          {updateMutation.isError && (
+            <p className="text-sm text-red-400">
+              {extractErrorMessage(updateMutation.error, t("admin.generalSettings.error"))}
+            </p>
+          )}
+          {localMessage && <p className="text-sm text-emerald-300">{localMessage}</p>}
+          <button
+            type="submit"
+                disabled={updateMutation.isPending}
+            className="btn-cta w-full justify-center sm:w-auto"
+          >
+                {updateMutation.isPending
+              ? t("admin.generalSettings.saving")
+              : t("admin.generalSettings.save")}
+          </button>
+        </form>
+      </DashboardCard>
+    </div>
+  );
 }
 
 function PaginationControls({
@@ -1538,4 +3190,31 @@ type QuestionFigureModalState = {
   loading: boolean;
   page?: number;
 };
+
+type HighlightModalState = {
+  questionId: number;
+  source?: FigureSource;
+  loading: boolean;
+  page?: number;
+};
+
+function parseDecorationsFromMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): StepDirective[] {
+  if (!metadata || typeof metadata !== "object") {
+    return [];
+  }
+  return getQuestionDecorations({ metadata } as { metadata: Record<string, unknown> });
+}
+
+function sanitizeDecorationsForMetadata(next: StepDirective[]): Array<Record<string, unknown>> {
+  return next.map((entry) => {
+    const payload: Record<string, unknown> = {
+      target: "passage",
+      text: entry.text,
+    };
+    payload.action = "underline";
+    return payload;
+  });
+}
 

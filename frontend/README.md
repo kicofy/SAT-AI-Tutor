@@ -19,7 +19,7 @@ frontend/
 
 ```
 NEXT_PUBLIC_APP_NAME=SAT AI Tutor
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:5080
+NEXT_PUBLIC_API_BASE=http://192.168.50.235:5080
 NEXT_PUBLIC_GAMIFICATION_COPY=Keep your streak alive today!
 ```
 

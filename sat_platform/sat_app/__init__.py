@@ -8,7 +8,7 @@ from time import perf_counter
 import click
 from flask import Flask, g, request, current_app
 from flask_jwt_extended import JWTManager
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, event
 
 from config import resolve_config
 from .blueprints import BLUEPRINTS
@@ -16,6 +16,7 @@ from .extensions import cors, db, jwt, migrate, limiter
 from .logging_config import configure_logging, assign_request_id
 from .metrics import record_request
 from .utils import hash_password
+from .blueprints.admin_bp import schedule_import_autoresume
 
 
 def create_app(config_name: str | None = None) -> Flask:
@@ -26,6 +27,7 @@ def create_app(config_name: str | None = None) -> Flask:
     configure_logging(app)
     _register_extensions(app)
     _register_blueprints(app)
+    schedule_import_autoresume(app)
     _register_shellcontext(app)
     _register_cli(app)
     _register_bootstrap(app)
@@ -45,6 +47,7 @@ def _register_extensions(app: Flask) -> None:
     migrate.init_app(app, db)
     jwt.init_app(app)
     _configure_jwt(jwt)
+    _configure_sqlite_engine(app)
     cors.init_app(
         app,
         resources={r"/api/*": {"origins": app.config.get("CORS_ORIGINS", "*")}},
@@ -138,12 +141,35 @@ def _register_request_hooks(app: Flask) -> None:
         return response
 
 
+def _configure_sqlite_engine(app: Flask) -> None:
+    uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+    if not uri.startswith("sqlite"):
+        return
+    busy_timeout_ms = int(app.config.get("SQLITE_BUSY_TIMEOUT_MS", 15000))
+
+    with app.app_context():
+        engine = db.engine
+
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragmas(dbapi_connection, connection_record):  # pragma: no cover
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms};")
+                cursor.execute("PRAGMA synchronous=NORMAL;")
+            finally:
+                cursor.close()
+
+
 def _ensure_schema(app: Flask) -> None:
     with app.app_context():
         db.create_all()
         _ensure_email_verification_columns()
         _ensure_user_status_columns()
         _ensure_password_reset_columns()
+        _ensure_membership_columns()
+        _ensure_question_explanation_columns()
+        _ensure_ai_paper_job_columns()
 
 
 def _register_cli(app: Flask) -> None:
@@ -177,8 +203,11 @@ def _register_cli(app: Flask) -> None:
                     role="admin",
                     is_root=False,
                 )
+                default_questions = app.config.get("PLAN_DEFAULT_QUESTIONS", 12)
+                minutes_per_question = app.config.get("PLAN_MIN_PER_QUESTION", 5)
                 admin_user.profile = UserProfile(
-                    daily_available_minutes=90,
+                    daily_available_minutes=default_questions * minutes_per_question,
+                    daily_plan_questions=default_questions,
                     language_preference="bilingual",
                 )
                 db.session.add(admin_user)
@@ -198,8 +227,11 @@ def _register_cli(app: Flask) -> None:
                         role="student",
                         is_root=False,
                     )
+                    default_questions = app.config.get("PLAN_DEFAULT_QUESTIONS", 12)
+                    minutes_per_question = app.config.get("PLAN_MIN_PER_QUESTION", 5)
                     student_user.profile = UserProfile(
-                        daily_available_minutes=60,
+                        daily_available_minutes=default_questions * minutes_per_question,
+                        daily_plan_questions=default_questions,
                         language_preference="en",
                     )
                     db.session.add(student_user)
@@ -289,8 +321,11 @@ def _ensure_root_admin(app: Flask) -> None:
             is_root=True,
             is_email_verified=True,
         )
+        default_questions = app.config.get("PLAN_DEFAULT_QUESTIONS", 12)
+        minutes_per_question = app.config.get("PLAN_MIN_PER_QUESTION", 5)
         root.profile = UserProfile(
-            daily_available_minutes=120,
+            daily_available_minutes=default_questions * minutes_per_question,
+            daily_plan_questions=default_questions,
             language_preference="bilingual",
         )
         db.session.add(root)
@@ -432,6 +467,115 @@ def _ensure_password_reset_columns() -> None:
         trans.rollback()
         current_app.logger.debug(
             "Skipping automatic password reset column patch",
+            exc_info=True,
+        )
+    finally:
+        connection.close()
+
+
+def _ensure_membership_columns() -> None:
+    inspector = inspect(db.engine)
+    if "users" not in inspector.get_table_names():
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("users")}
+    dialect = db.engine.dialect.name
+    datetime_type = "TIMESTAMP" if dialect != "sqlite" else "TEXT"
+    date_type = "DATE" if dialect != "sqlite" else "TEXT"
+
+    statements: list[str] = []
+
+    if "membership_expires_at" not in columns:
+        statements.append(f"ALTER TABLE users ADD COLUMN membership_expires_at {datetime_type}")
+    if "ai_explain_quota_date" not in columns:
+        statements.append(f"ALTER TABLE users ADD COLUMN ai_explain_quota_date {date_type}")
+    if "ai_explain_quota_used" not in columns:
+        statements.append(
+            "ALTER TABLE users ADD COLUMN ai_explain_quota_used INTEGER NOT NULL DEFAULT 0"
+        )
+
+    if not statements:
+        return
+
+    connection = db.engine.connect()
+    trans = connection.begin()
+    try:
+        for statement in statements:
+            connection.execute(text(statement))
+        trans.commit()
+    except Exception:  # pragma: no cover - defensive logging
+        trans.rollback()
+        current_app.logger.debug(
+            "Skipping automatic membership column patch",
+            exc_info=True,
+        )
+    finally:
+        connection.close()
+
+
+def _ensure_question_explanation_columns() -> None:
+    inspector = inspect(db.engine)
+    if "question_explanations" not in inspector.get_table_names():
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("question_explanations")}
+    statements: list[str] = []
+    if "source" not in columns:
+        statements.append("ALTER TABLE question_explanations ADD COLUMN source VARCHAR(32)")
+
+    if not statements:
+        return
+
+    connection = db.engine.connect()
+    trans = connection.begin()
+    try:
+        for statement in statements:
+            connection.execute(text(statement))
+        trans.commit()
+    except Exception:  # pragma: no cover - defensive logging
+        trans.rollback()
+        current_app.logger.debug(
+            "Skipping automatic question explanation patch",
+            exc_info=True,
+        )
+    finally:
+        connection.close()
+
+
+def _ensure_ai_paper_job_columns() -> None:
+    inspector = inspect(db.engine)
+    if "ai_paper_jobs" not in inspector.get_table_names():
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("ai_paper_jobs")}
+    statements: list[str] = []
+    dialect = db.engine.dialect.name
+    text_type = "TEXT" if dialect == "sqlite" else "VARCHAR(255)"
+
+    if "stage" not in columns:
+        statements.append(
+            f"ALTER TABLE ai_paper_jobs ADD COLUMN stage {text_type} NOT NULL DEFAULT 'pending'"
+        )
+    if "stage_index" not in columns:
+        statements.append(
+            "ALTER TABLE ai_paper_jobs ADD COLUMN stage_index INTEGER NOT NULL DEFAULT 0"
+        )
+    if "status_message" not in columns:
+        statements.append("ALTER TABLE ai_paper_jobs ADD COLUMN status_message TEXT")
+
+    if not statements:
+        return
+
+    connection = db.engine.connect()
+    trans = connection.begin()
+    try:
+        for statement in statements:
+            connection.execute(text(statement))
+        trans.commit()
+    except Exception:  # pragma: no cover - defensive logging
+        trans.rollback()
+        current_app.logger.debug(
+            "Skipping automatic ai_paper_jobs column patch",
             exc_info=True,
         )
     finally:

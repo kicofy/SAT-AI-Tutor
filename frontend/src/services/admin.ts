@@ -6,6 +6,9 @@ import {
   AdminUserDetail,
   PaginatedResponse,
   AdminQuestion,
+  GeneralSettings,
+  AIPaperJob,
+  OpenAILogEntry,
 } from "@/types/admin";
 import { FigureSource } from "@/types/figure";
 
@@ -25,8 +28,14 @@ export async function ingestPdf(file: File, options?: { force?: boolean }) {
   return data;
 }
 
+import { QuestionCategory } from "@/types/admin";
+
 export async function deleteQuestion(questionId: number) {
   await api.delete(`/api/admin/questions/${questionId}`);
+}
+
+export async function deleteQuestionsBulk(questionIds: number[]) {
+  await api.post("/api/admin/questions/bulk-delete", { ids: questionIds });
 }
 
 export async function clearQuestionExplanation(questionId: number) {
@@ -100,7 +109,7 @@ export async function deleteQuestionFigure(questionId: number, figureId: number)
 
 export async function fetchOpenaiLogs(limit = 100) {
   const { data } = await api.get("/api/admin/logs/openai", { params: { limit } });
-  return data;
+  return data as { logs: OpenAILogEntry[] };
 }
 
 export async function cancelImport(jobId: number) {
@@ -150,6 +159,14 @@ export async function updateAdminUser(
   return data;
 }
 
+export async function updateUserMembership(
+  userId: number,
+  payload: { action: "extend" | "set" | "revoke"; days?: number; note?: string }
+): Promise<{ membership: unknown; user: AdminUser }> {
+  const { data } = await api.post(`/api/admin/users/${userId}/membership`, payload);
+  return data;
+}
+
 export async function getAdminQuestions(params: {
   page?: number;
   per_page?: number;
@@ -157,6 +174,7 @@ export async function getAdminQuestions(params: {
   question_uid?: string;
   question_id?: number;
   source_id?: number;
+  skill_tag?: string;
 }): Promise<{ items: AdminQuestion[]; page: number; per_page: number; total: number }> {
   const { data } = await api.get("/api/admin/questions", { params });
   return data;
@@ -175,6 +193,16 @@ export async function updateAdminQuestion(
   return data;
 }
 
+export async function getGeneralSettings(): Promise<GeneralSettings> {
+  const { data } = await api.get("/api/admin/settings/general");
+  return data.settings as GeneralSettings;
+}
+
+export async function updateGeneralSettings(payload: GeneralSettings): Promise<GeneralSettings> {
+  const { data } = await api.put("/api/admin/settings/general", payload);
+  return data.settings as GeneralSettings;
+}
+
 export async function getAdminSources(params: {
   page?: number;
   per_page?: number;
@@ -190,5 +218,46 @@ export async function getAdminSourceDetail(
 ): Promise<AdminSourceDetail> {
   const { data } = await api.get(`/api/admin/sources/${sourceId}`, { params });
   return data;
+}
+
+export async function deleteSource(sourceId: number) {
+  await api.delete(`/api/admin/sources/${sourceId}`);
+}
+
+export async function resumeImportJob(jobId: number) {
+  const { data } = await api.post(`/api/admin/questions/imports/${jobId}/resume`);
+  return data;
+}
+
+export async function getQuestionCategories(): Promise<QuestionCategory[]> {
+  const { data } = await api.get("/api/admin/questions/categories");
+  return Array.isArray(data?.categories) ? data.categories : [];
+}
+
+export async function listAIPaperJobs(params?: {
+  page?: number;
+  per_page?: number;
+}): Promise<PaginatedResponse<AIPaperJob>> {
+  const { data } = await api.get("/api/admin/ai/papers", { params });
+  return data;
+}
+
+export async function createAIPaperJob(payload: { name?: string; config?: Record<string, unknown> }) {
+  const { data } = await api.post("/api/admin/ai/papers", payload);
+  return data as AIPaperJob;
+}
+
+export async function getAIPaperJob(jobId: number): Promise<AIPaperJob> {
+  const { data } = await api.get(`/api/admin/ai/papers/${jobId}`);
+  return data as AIPaperJob;
+}
+
+export async function resumeAIPaperJob(jobId: number): Promise<AIPaperJob> {
+  const { data } = await api.post(`/api/admin/ai/papers/${jobId}/resume`);
+  return data as AIPaperJob;
+}
+
+export async function deleteAIPaperJob(jobId: number): Promise<void> {
+  await api.delete(`/api/admin/ai/papers/${jobId}`);
 }
 
