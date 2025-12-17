@@ -193,19 +193,23 @@ def select_next_questions(
     section: str | None = None,
     *,
     focus_skill: str | None = None,
+    include_due: bool = True,
     last_summary: dict | None = None,
 ) -> List[Question]:
     selected: List[Question] = []
     seen_ids: set[int] = set()
 
-    due_questions = spaced_repetition.get_due_questions(user_id, limit=num_questions, section=section)
-    for q in due_questions:
-        if q.id in seen_ids:
-            continue
-        selected.append(q)
-        seen_ids.add(q.id)
-        if len(selected) >= num_questions:
-            return selected
+    if include_due:
+        due_questions = spaced_repetition.get_due_questions(
+            user_id, limit=num_questions, section=section, focus_skill=focus_skill
+        )
+        for q in due_questions:
+            if q.id in seen_ids:
+                continue
+            selected.append(q)
+            seen_ids.add(q.id)
+            if len(selected) >= num_questions:
+                return selected
 
     mastery_map = load_user_mastery(user_id)
     summary_bias = _build_summary_bias(last_summary)

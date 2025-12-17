@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from time import sleep
-from typing import List, Optional, Dict, Iterable
+from typing import List, Optional, Dict, Iterable, Any
 
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import or_
 from flask import current_app, url_for
 import re
 from sqlalchemy.orm.attributes import flag_modified
+from ..utils.signed_urls import sign_payload
 
 from ..extensions import db
 from ..models import Question, StudySession, UserQuestionLog
@@ -49,6 +50,8 @@ def select_questions(
     focus_skill: str | None = None,
     exclude_ids: Optional[Iterable[int]] = None,
     source_id: int | None = None,
+    include_due: bool = True,
+    log_context: Optional[Dict[str, Any]] = None,
 ) -> List[Question]:
     excluded_set = {int(qid) for qid in (exclude_ids or [])}
     if source_id:
@@ -65,11 +68,37 @@ def select_questions(
         num_questions=num_questions,
         section=section,
         focus_skill=focus_skill,
+        include_due=include_due,
         last_summary=last_summary,
     )
     filtered: List[Question] = [q for q in initial if q.id not in excluded_set]
+    initial_count = len(filtered)
     if len(filtered) >= num_questions:
-        return filtered[:num_questions]
+        final_selection = filtered[:num_questions]
+        ctx = log_context or {}
+        logger = getattr(current_app, "logger", None)
+        if logger:
+            try:
+                logger.info(
+                    "select_questions",
+                    extra={
+                        "event": "select_questions",
+                        "user_id": user_id,
+                        "section": section,
+                        "focus_skill": focus_skill,
+                        "include_due": include_due,
+                        "requested": num_questions,
+                        "initial_count": initial_count,
+                        "extras_count": 0,
+                        "exclude_count": len(excluded_set),
+                        "final_count": len(final_selection),
+                        "final_question_ids": [q.id for q in final_selection],
+                        "context": ctx,
+                    },
+                )
+            except Exception:
+                pass
+        return final_selection
 
     needed = num_questions - len(filtered)
     used_ids = {q.id for q in filtered}.union(excluded_set)
@@ -90,7 +119,33 @@ def select_questions(
         extras = _round_robin_by_difficulty(fallback, needed)
 
     filtered.extend(extras)
-    return filtered[:num_questions]
+    final_selection = filtered[:num_questions]
+
+    ctx = log_context or {}
+    logger = getattr(current_app, "logger", None)
+    if logger:
+        try:
+            logger.info(
+                "select_questions",
+                extra={
+                    "event": "select_questions",
+                    "user_id": user_id,
+                    "section": section,
+                    "focus_skill": focus_skill,
+                    "include_due": include_due,
+                    "requested": num_questions,
+                    "initial_count": initial_count,
+                    "extras_count": len(extras),
+                    "exclude_count": len(excluded_set),
+                    "final_count": len(final_selection),
+                    "final_question_ids": [q.id for q in final_selection],
+                    "context": ctx,
+                },
+            )
+        except Exception:
+            pass
+
+    return final_selection
 
 
 def create_session(
@@ -273,6 +328,26 @@ def get_last_session_summary(user_id: int) -> Optional[dict]:
     return session.summary
 
 
+def _figure_signing_config():
+    cfg = current_app.config
+    return {
+        "secret": cfg.get("FIGURE_URL_SECRET") or cfg.get("JWT_SECRET_KEY"),
+        "salt": cfg.get("FIGURE_URL_SALT", "figure-url"),
+    }
+
+
+def _signed_figure_url(figure_id: int, scope: str, endpoint: str) -> str:
+    cfg = _figure_signing_config()
+    token = sign_payload(
+        secret=cfg["secret"],
+        salt=cfg["salt"],
+        payload={"fid": figure_id, "scope": scope},
+    )
+    path = url_for(endpoint, figure_id=figure_id, _external=False)
+    separator = "&" if "?" in path else "?"
+    return f"{path}{separator}sig={token}"
+
+
 def _serialize_question(question: Question) -> dict:
     payload: dict = {
         "question_id": question.id,
@@ -317,10 +392,8 @@ def _serialize_question(question: Question) -> dict:
                 "id": figure.id,
                 "description": figure.description,
                 "bbox": figure.bbox,
-                "url": url_for(
-                    "learning_bp.get_question_figure_image",
-                    figure_id=figure.id,
-                    _external=False,
+                "url": _signed_figure_url(
+                    figure.id, "practice", "learning_bp.get_question_figure_image"
                 ),
             }
             figures.append(ref)
@@ -403,7 +476,18 @@ def refresh_assigned_questions(session: StudySession | None, *, commit: bool = T
 
     needed = original_count - len(refreshed_entries)
     if needed > 0:
-        extras = _top_up_questions(session.user_id, needed, exclude_ids=used_ids, section=_dominant_section(refreshed_entries or assigned))
+        extras = _top_up_questions(
+            session.user_id,
+            needed,
+            exclude_ids=used_ids,
+            section=_dominant_section(refreshed_entries or assigned),
+            include_due=session.session_type != "plan",
+            log_context={
+                "context": "session_refresh_top_up",
+                "plan_block_id": getattr(session, "plan_block_id", None),
+                "session_type": session.session_type,
+            },
+        )
         if extras:
             refreshed_entries.extend(extras)
             used_ids.update([entry["question_id"] for entry in extras if entry.get("question_id")])
@@ -460,10 +544,26 @@ def _select_replacement_question(
     return candidates[0]
 
 
-def _top_up_questions(user_id: int, needed: int, *, exclude_ids: set[int], section: str | None):
+def _top_up_questions(
+    user_id: int,
+    needed: int,
+    *,
+    exclude_ids: set[int],
+    section: str | None,
+    include_due: bool = True,
+    focus_skill: str | None = None,
+    log_context: Optional[Dict[str, Any]] = None,
+):
     if needed <= 0:
         return []
-    questions = select_questions(user_id=user_id, num_questions=needed, section=section)
+    questions = select_questions(
+        user_id=user_id,
+        num_questions=needed,
+        section=section,
+        focus_skill=focus_skill,
+        include_due=include_due,
+        log_context=log_context,
+    )
     filtered = []
     for question in questions:
         if question.id in exclude_ids:
@@ -490,7 +590,17 @@ def _reseed_session_questions(session: StudySession, desired_count: int):
     if session.session_type == "diagnostic":
         return session.questions_assigned or []
     count = max(desired_count, 1)
-    questions = select_questions(session.user_id, num_questions=count)
+    include_due = session.session_type != "plan"
+    questions = select_questions(
+        session.user_id,
+        num_questions=count,
+        include_due=include_due,
+        log_context={
+            "context": "session_reseed",
+            "plan_block_id": getattr(session, "plan_block_id", None),
+            "session_type": session.session_type,
+        },
+    )
     if not questions:
         session.questions_assigned = []
         flag_modified(session, "questions_assigned")

@@ -698,6 +698,12 @@ def _select_questions_for_block(
         section=section,
         focus_skill=focus_skill,
         exclude_ids=exclude_ids,
+        include_due=False,  # daily plan should not pull spaced-repetition due items
+        log_context={
+            "block_id": block_id,
+            "plan_date": plan_date.isoformat(),
+            "context": "plan_block_select",
+        },
     )
 
 
@@ -715,9 +721,12 @@ def _create_plan_session(user_id: int, questions: List, plan_block_id: str) -> S
 def _normalize_section(section: str | None) -> str | None:
     if not section:
         return None
-    normalized = section.upper()
-    if normalized in {"RW", "MATH"}:
-        return normalized
+    normalized = section.strip().lower()
+    # Store sections in DB as "RW" or "Math"; normalize inputs accordingly.
+    if normalized in {"rw", "reading_writing", "readingwriting", "reading & writing"}:
+        return "RW"
+    if normalized in {"math", "m"}:
+        return "Math"
     return None
 
 
@@ -748,6 +757,12 @@ def _ensure_session_question_target(session: StudySession, task: StudyPlanTask, 
             num_questions=deficit,
             section=section,
             focus_skill=focus_skill,
+            include_due=False,  # plan blocks should stay on-focus and new
+            log_context={
+                "block_id": block.get("block_id"),
+                "plan_date": (task.plan_date.isoformat() if getattr(task, "plan_date", None) else None),
+                "context": "plan_block_top_up",
+            },
         )
         if not candidates:
             break

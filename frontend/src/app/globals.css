@@ -25,8 +25,22 @@ body {
   min-height: 100vh;
 }
 
+.katex {
+  color: #e8edf7;
+}
+
+.katex-display {
+  overflow-x: auto;
+  padding-block: 0.35rem;
+}
+
 * {
   box-sizing: border-box;
+}
+
+script > nextjs-portal {
+  left: unset !important;
+  top: unset !important;
 }
 
 @layer components {

@@ -35,7 +35,6 @@ import {
 import { extractErrorMessage } from "@/lib/errors";
 import { AxiosError } from "axios";
 import { env } from "@/lib/env";
-import { getClientToken } from "@/lib/auth-storage";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAuthStore } from "@/stores/auth-store";
 import { getQuestionDecorations } from "@/lib/question-decorations";
@@ -125,9 +124,6 @@ export function PracticeView({
   const [isExplanationLoading, setExplanationLoading] = useState(false);
   const [maxQuestions, setMaxQuestions] = useState(DEFAULT_MAX_QUESTIONS);
   const [activeDirectives, setActiveDirectives] = useState<StepDirective[]>([]);
-  const [mediaToken, setMediaToken] = useState<string | null>(
-    typeof window !== "undefined" ? getClientToken() : null
-  );
   const [isFinishDialogOpen, setFinishDialogOpen] = useState(false);
   const [isAbortDialogOpen, setAbortDialogOpen] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
@@ -273,25 +269,10 @@ export function PracticeView({
     };
   }, [planBlockId, userId]);
 
-  useEffect(() => {
-    setMediaToken(getClientToken());
+  const buildFigureSrc = useCallback((url?: string) => {
+    if (!url) return null;
+    return url.startsWith("http://") || url.startsWith("https://") ? url : `${API_BASE_URL}${url}`;
   }, []);
-
-  const buildFigureSrc = useCallback(
-    (url?: string) => {
-      if (!url) return null;
-      const absolute =
-        url.startsWith("http://") || url.startsWith("https://")
-          ? url
-          : `${API_BASE_URL}${url}`;
-      if (!mediaToken) {
-        return absolute;
-      }
-      const separator = absolute.includes("?") ? "&" : "?";
-      return `${absolute}${separator}token=${encodeURIComponent(mediaToken)}`;
-    },
-    [mediaToken]
-  );
 
   const currentQuestion: SessionQuestion | undefined =
     session?.questions_assigned[currentIndex];

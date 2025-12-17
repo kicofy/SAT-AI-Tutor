@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+from pathlib import Path
+from typing import Optional
 
-from flask import Blueprint, jsonify, request, abort, send_file
+from flask import Blueprint, jsonify, request, abort, send_file, current_app
 from flask_jwt_extended import current_user, jwt_required
+from itsdangerous import BadSignature, SignatureExpired
 from marshmallow import ValidationError
 
 from werkzeug.exceptions import BadRequest
 
 from ..models import Question, StudySession, UserQuestionLog, QuestionFigure
-from pathlib import Path
 from ..schemas import (
     SessionAnswerSchema,
     SessionSchema,
@@ -27,7 +29,8 @@ from ..services import (
     membership_service,
     question_explanation_service,
 )
-from ..extensions import db
+from ..extensions import db, limiter
+from ..utils.signed_urls import sign_payload, verify_payload
 
 learning_bp = Blueprint("learning_bp", __name__)
 
@@ -35,6 +38,55 @@ start_schema = SessionStartSchema()
 answer_schema = SessionAnswerSchema()
 explanation_schema = SessionExplanationSchema()
 session_schema = SessionSchema()
+
+FIGURE_SCOPE_PRACTICE = "practice"
+FIGURE_SCOPE_PREVIEW = "preview"
+
+
+def _figure_signing_config():
+    cfg = current_app.config
+    return {
+        "secret": cfg.get("FIGURE_URL_SECRET") or cfg.get("JWT_SECRET_KEY"),
+        "salt": cfg.get("FIGURE_URL_SALT", "figure-url"),
+        "ttl_practice": int(cfg.get("FIGURE_URL_TTL_PRACTICE", 1800)),
+        "ttl_preview": int(cfg.get("FIGURE_URL_TTL_PREVIEW", 600)),
+        "limit_practice": cfg.get("FIGURE_URL_RATE_LIMIT_PRACTICE", "60 per minute"),
+        "limit_preview": cfg.get("FIGURE_URL_RATE_LIMIT_PREVIEW", "30 per minute"),
+    }
+
+
+def _verify_figure_token(figure_id: int, scope: str, *, allow_admin_fallback: bool = True) -> None:
+    """Validate signed token on figure fetch; optionally allow admin fallback."""
+
+    token = request.args.get("sig") or request.args.get("token")
+    cfg = _figure_signing_config()
+    max_age = cfg["ttl_preview"] if scope == FIGURE_SCOPE_PREVIEW else cfg["ttl_practice"]
+    if token:
+        try:
+            payload = verify_payload(
+                token,
+                secret=cfg["secret"],
+                salt=cfg["salt"],
+                max_age=max_age,
+            )
+        except SignatureExpired:
+            abort(401)
+        except BadSignature:
+            abort(401)
+        if int(payload.get("fid", -1)) != int(figure_id) or payload.get("scope") != scope:
+            abort(403)
+        return
+
+    # Fallback: allow admins with an active JWT to bypass signature (for debugging/tools).
+    if allow_admin_fallback and current_user and getattr(current_user, "role", None) == "admin":
+        return
+    abort(401)
+
+
+def _serve_figure_file(path: Path, max_age: int):
+    response = send_file(path, mimetype="image/png")
+    response.headers["Cache-Control"] = f"private, max-age={max_age}"
+    return response
 
 
 def _diagnostic_guard():
@@ -322,19 +374,23 @@ def _resolve_user_language(user):
 
 
 @learning_bp.get("/questions/figures/<int:figure_id>/image")
-@jwt_required()
+@jwt_required(optional=True)
+@limiter.limit(lambda: _figure_signing_config()["limit_practice"])
 def get_question_figure_image(figure_id: int):
     figure = QuestionFigure.query.filter_by(id=figure_id).first()
     if not figure or figure.question_id is None or not figure.image_path:
         abort(404)
+    _verify_figure_token(figure_id, FIGURE_SCOPE_PRACTICE, allow_admin_fallback=True)
     path = Path(figure.image_path)
     if not path.exists():
         abort(404)
-    return send_file(path, mimetype="image/png")
+    cfg = _figure_signing_config()
+    return _serve_figure_file(path, cfg["ttl_practice"])
 
 
 @learning_bp.get("/questions/preview-figures/<int:figure_id>/image")
-@jwt_required()
+@jwt_required(optional=True)
+@limiter.limit(lambda: _figure_signing_config()["limit_preview"])
 def get_preview_figure_image(figure_id: int):
     """Serve figure images for draft/previews (used in practice preview)."""
     figure = QuestionFigure.query.filter_by(id=figure_id).first()
@@ -343,8 +399,10 @@ def get_preview_figure_image(figure_id: int):
     # Allow either question-linked or draft-linked figures.
     if figure.question_id is None and figure.draft_id is None:
         abort(404)
+    _verify_figure_token(figure_id, FIGURE_SCOPE_PREVIEW, allow_admin_fallback=True)
     path = Path(figure.image_path)
     if not path.exists():
         abort(404)
-    return send_file(path, mimetype="image/png")
+    cfg = _figure_signing_config()
+    return _serve_figure_file(path, cfg["ttl_preview"])
 

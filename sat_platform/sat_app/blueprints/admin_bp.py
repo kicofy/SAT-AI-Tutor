@@ -60,6 +60,7 @@ from ..services.skill_taxonomy import canonicalize_tags, describe_skill
 from ..services.job_events import job_event_broker
 from ..tasks.question_tasks import process_job
 from ..utils import hash_password
+from ..utils.signed_urls import sign_payload
 
 admin_bp = Blueprint("admin_bp", __name__)
 
@@ -391,6 +392,26 @@ def _figure_root() -> Path:
     root = Path(current_app.instance_path) / FIGURE_DIR_NAME
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _figure_signing_config():
+    cfg = current_app.config
+    return {
+        "secret": cfg.get("FIGURE_URL_SECRET") or cfg.get("JWT_SECRET_KEY"),
+        "salt": cfg.get("FIGURE_URL_SALT", "figure-url"),
+    }
+
+
+def _signed_figure_url(figure_id: int, scope: str, endpoint: str) -> str:
+    cfg = _figure_signing_config()
+    token = sign_payload(
+        secret=cfg["secret"],
+        salt=cfg["salt"],
+        payload={"fid": figure_id, "scope": scope},
+    )
+    path = url_for(endpoint, figure_id=figure_id, _external=False)
+    separator = "&" if "?" in path else "?"
+    return f"{path}{separator}sig={token}"
 
 
 def _delete_figure_file(figure: QuestionFigure) -> None:
@@ -1460,7 +1481,9 @@ def preview_draft_question(draft_id: int):
             "id": figure.id,
             "description": figure.description,
             "bbox": figure.bbox,
-            "url": url_for("learning_bp.get_preview_figure_image", figure_id=figure.id, _external=False),
+            "url": _signed_figure_url(
+                figure.id, "preview", "learning_bp.get_preview_figure_image"
+            ),
         }
         figures.append(ref)
         desc = (figure.description or "").lower()

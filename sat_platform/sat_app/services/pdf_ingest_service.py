@@ -504,7 +504,7 @@ def _normalize_question(
         "- section: \"RW\" or \"Math\".\n"
         "- sub_section: optional string or null.\n"
         "- passage: ONLY the supporting narrative text (introductory paragraphs). Do NOT include chart/table contents, figure titles, or the question sentence. Leave as null if no prose passage exists.\n"
-        "- stem_text: ONLY the interrogative portion (e.g., \"Which choice ...?\"). Never prepend the passage or restate figure/table data verbatim.\n"
+        "- stem_text: ONLY the interrogative portion (e.g., \"Which choice ...?\"). Never prepend the passage or restate figure/table data verbatim. Preserve math notation in LaTeX form; allow inline $...$ or \\(...\\) and block $$...$$ without escaping backslashes.\n"
         "- choices: object whose keys are capital letters (A,B,C,...) and values are choice texts. If the item is NOT multiple-choice, set choices to {}.\n"
         "- question_type: \"choice\" for multiple-choice, \"fill\" for student-produced response (SPR). If there are no valid lettered choices, default to \"fill\".\n"
         "- correct_answer: object like {\"value\": \"A\"} for MCQ, or {\"value\": \"3.5\"} for fill.\n"

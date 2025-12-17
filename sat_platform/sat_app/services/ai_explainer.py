@@ -98,10 +98,10 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         ensure_ascii=False,
     )
     math_guidelines = (
-        "- If this is a Math item, use clear LaTeX-style notation for fractions \\frac{a}{b}, powers x^{2}, roots \\sqrt{x}, and \\pi.\n"
+        "- Math notation: inline LaTeX with $...$; block math with $$...$$. Use clear forms for fractions \\frac{a}{b}, powers x^{2}, roots \\sqrt{x}, and \\pi.\n"
         "- For fill-in (SPR) math items, list acceptable equivalent forms (fractions/decimals/pi) in answer_forms; keep the main explanation consistent with the official key.\n"
         "- If choices contain images/graphs, reference them by option letter (e.g., \"see option B graph\")—do NOT invent unseen details.\n"
-        "- Keep each formula concise; show the key transformation steps and a quick check/substitution if applicable.\n"
+        "- Keep each formula concise; show the key transformation steps and a quick check/substitution if applicable. Prefer readable LaTeX instead of verbose prose when showing algebra steps.\n"
     )
     system_prompt = (
         "You are an elite SAT tutor who provides animated explanations.\n"

@@ -84,6 +84,12 @@ class BaseConfig:
     RATE_LIMIT_DEFAULTS = [limit.strip() for limit in os.getenv("RATE_LIMIT_DEFAULTS", "200 per minute;1000 per day").split(";") if limit.strip()]
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
     JSON_SORT_KEYS = False
+    FIGURE_URL_SECRET = os.getenv("FIGURE_URL_SECRET") or JWT_SECRET_KEY
+    FIGURE_URL_SALT = os.getenv("FIGURE_URL_SALT", "figure-url")
+    FIGURE_URL_TTL_PREVIEW = int(os.getenv("FIGURE_URL_TTL_PREVIEW", "600"))
+    FIGURE_URL_TTL_PRACTICE = int(os.getenv("FIGURE_URL_TTL_PRACTICE", "1800"))
+    FIGURE_URL_RATE_LIMIT_PREVIEW = os.getenv("FIGURE_URL_RATE_LIMIT_PREVIEW", "30 per minute")
+    FIGURE_URL_RATE_LIMIT_PRACTICE = os.getenv("FIGURE_URL_RATE_LIMIT_PRACTICE", "60 per minute")
     ROOT_ADMIN_USERNAME = os.getenv("ROOT_ADMIN_USERNAME", "ha22y")
     ROOT_ADMIN_PASSWORD = os.getenv("ROOT_ADMIN_PASSWORD", "Kicofy5438")
     ROOT_ADMIN_EMAIL = os.getenv("ROOT_ADMIN_EMAIL", "ha22y@example.com")

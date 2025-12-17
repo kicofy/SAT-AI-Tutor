@@ -1,6 +1,9 @@
 "use client";
 
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 export type Translator = (key: string, params?: Record<string, unknown>) => string;
 
@@ -39,48 +42,80 @@ type HighlightedTextProps = {
 };
 
 export function HighlightedText({ text, directives = [], className }: HighlightedTextProps) {
-  const nodes = useMemo(() => {
-    if (!text) return null;
-    if (!directives.length) {
-      return <p className={className}>{text}</p>;
-    }
-    let remaining = text;
-    const segments: ReactNode[] = [];
+  const normalizedDirectives = useMemo(
+    () =>
+      (directives || []).filter(
+        (d) => d && typeof d.text === "string" && d.text.trim().length > 0
+      ),
+    [directives]
+  );
 
-    const pushText = (chunk: string) => {
-      if (!chunk) return;
-      segments.push(<span key={`${segments.length}-plain`}>{chunk}</span>);
-    };
+  const renderHighlighted = useCallback(
+    (value: string): ReactNode => {
+      if (!value) return null;
+      if (!normalizedDirectives.length) return value;
 
-    directives.forEach((directive, index) => {
-      if (!directive.text) return;
-      const snippet = directive.text.trim();
-      if (!snippet) return;
-      const matchIndex = remaining.toLowerCase().indexOf(snippet.toLowerCase());
-      if (matchIndex === -1) return;
-      const before = remaining.slice(0, matchIndex);
-      pushText(before);
-      const matchText = remaining.slice(matchIndex, matchIndex + snippet.length);
-      const classNames = getDirectiveClass(directive.action);
-      segments.push(
-        <mark
-          key={`${index}-highlight`}
-          className={`rounded px-1 ${classNames}`}
-          data-action={directive.action}
-        >
-          {matchText}
-        </mark>
-      );
-      remaining = remaining.slice(matchIndex + snippet.length);
-    });
-    pushText(remaining);
-    return segments;
-  }, [text, directives]);
+      let remaining = value;
+      const segments: ReactNode[] = [];
 
-  if (!text) {
+      const pushText = (chunk: string) => {
+        if (!chunk) return;
+        segments.push(<span key={`${segments.length}-plain`}>{chunk}</span>);
+      };
+
+      normalizedDirectives.forEach((directive, index) => {
+        const snippet = directive.text?.trim();
+        if (!snippet) return;
+        const matchIndex = remaining.toLowerCase().indexOf(snippet.toLowerCase());
+        if (matchIndex === -1) return;
+        const before = remaining.slice(0, matchIndex);
+        pushText(before);
+        const matchText = remaining.slice(matchIndex, matchIndex + snippet.length);
+        const classNames = getDirectiveClass(directive.action);
+        segments.push(
+          <mark
+            key={`${index}-highlight`}
+            className={`rounded px-1 ${classNames}`}
+            data-action={directive.action}
+          >
+            {matchText}
+          </mark>
+        );
+        remaining = remaining.slice(matchIndex + snippet.length);
+      });
+      pushText(remaining);
+      return segments;
+    },
+    [normalizedDirectives]
+  );
+
+  if (!text?.trim()) {
     return null;
   }
-  return <div className={className}>{nodes}</div>;
+
+  return (
+    <div className={className}>
+      <ReactMarkdown
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        skipHtml
+        components={{
+          p: ({ children }) => (
+            <p className="mb-2 whitespace-pre-wrap leading-relaxed last:mb-0">{children}</p>
+          ),
+          ul: ({ children }) => <ul className="mb-2 list-disc pl-5 last:mb-0">{children}</ul>,
+          ol: ({ children }) => <ol className="mb-2 list-decimal pl-5 last:mb-0">{children}</ol>,
+          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+          code: ({ children }) => (
+            <code className="rounded bg-white/10 px-1 py-0.5 text-[0.95em]">{children}</code>
+          ),
+          text: ({ children }) => <>{renderHighlighted(String(children ?? ""))}</>,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function getDirectiveClass(action?: string) {
@@ -101,6 +136,27 @@ function getDirectiveClass(action?: string) {
     default:
       return "bg-amber-300/40";
   }
+}
+
+function MathText({ text, className }: { text?: string; className?: string }) {
+  if (!text) return null;
+  return (
+    <div className={className}>
+      <ReactMarkdown
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={{
+          p: ({ node, ...props }) => (
+            <p className="mb-2 whitespace-pre-wrap leading-relaxed last:mb-0" {...props} />
+          ),
+          ul: ({ node, ...props }) => <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />,
+          ol: ({ node, ...props }) => <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 type ExplanationViewerProps = {
@@ -262,12 +318,18 @@ export function ExplanationViewer({
           {step.board_notes?.length ? (
             <ul className="list-disc space-y-1 rounded-lg border border-white/10 bg-transparent px-5 py-2 text-white/60">
               {step.board_notes.map((note, idx) => (
-                <li key={idx}>{note}</li>
+                <li key={idx}>
+                  <MathText text={note} />
+                </li>
               ))}
             </ul>
           ) : null}
           <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white">
-            {subtitle || narrationFor(step)}
+            {isPlaying && subtitle ? (
+              <p className="whitespace-pre-wrap leading-relaxed">{subtitle}</p>
+            ) : (
+              <MathText text={narrationFor(step)} />
+            )}
           </div>
           <p className="text-white/40 text-[11px]">
             {t("practice.explain.duration", {
