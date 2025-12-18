@@ -1,21 +1,15 @@
-"""Vision-aware PDF ingestion powered by multimodal AI."""
-
-from __future__ import annotations
-
-import base64
-import io
-import json
-import threading
-import time
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    TimeoutError as FutureTimeout,
-    CancelledError,
-    wait,
-    FIRST_COMPLETED,
-)
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Literal
+*** Begin Patch
+*** Update File: sat_platform/sat_app/services/pdf_ingest_service.py
+@@
+-AttemptHook = Callable[
+-    [Literal["start", "retry", "success", "heartbeat"], int, int, float, Optional[Exception]],
+-    None,
+-]
++AttemptHook = Callable[
++    [Literal["start", "retry", "success", "heartbeat"], int, int, float, Optional[Exception]],
++    None,
++]
+*** End PatchList, Optional, Literal
 
 import pdfplumber
 import requests
