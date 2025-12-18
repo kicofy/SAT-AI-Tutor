@@ -225,15 +225,15 @@ def select_next_questions(
         due_questions = spaced_repetition.get_due_questions(
             user_id, limit=num_questions, section=section, focus_skill=focus_skill
         )
-        for q in due_questions:
+    for q in due_questions:
             if not _is_question_valid(q):
                 continue
-            if q.id in seen_ids:
-                continue
-            selected.append(q)
-            seen_ids.add(q.id)
-            if len(selected) >= num_questions:
-                return selected
+        if q.id in seen_ids:
+            continue
+        selected.append(q)
+        seen_ids.add(q.id)
+        if len(selected) >= num_questions:
+            return selected
 
     mastery_map = load_user_mastery(user_id)
     summary_bias = _build_summary_bias(last_summary)

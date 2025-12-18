@@ -11,7 +11,7 @@ ENV/
 # Environment / secrets
 .env
 .env.*
-!/.env.example
+.env.example
 .python-version
 
 # Tooling caches
