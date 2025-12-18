@@ -221,13 +221,14 @@ def select_next_questions(
     selected: List[Question] = []
     seen_ids: set[int] = set()
 
+    due_questions: List[Question] = []
     if include_due:
         due_questions = spaced_repetition.get_due_questions(
             user_id, limit=num_questions, section=section, focus_skill=focus_skill
         )
     for q in due_questions:
-            if not _is_question_valid(q):
-                continue
+        if not _is_question_valid(q):
+            continue
         if q.id in seen_ids:
             continue
         selected.append(q)
