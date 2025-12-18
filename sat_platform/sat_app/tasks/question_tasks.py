@@ -16,12 +16,26 @@ from ..utils.file_parser import parse_file
 from ..services import ai_question_parser, pdf_ingest_service
 
 
+def _flush_with_retry(attempts: int = 5, base_delay: float = 0.2) -> None:
+    for attempt in range(attempts):
+        try:
+            db.session.flush()
+            return
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            db.session.rollback()
+            time.sleep(base_delay * (attempt + 1))
+    db.session.flush()
+
+
 def _save_draft(job: QuestionImportJob, payload: dict) -> None:
     draft = QuestionDraft(job_id=job.id, payload=payload, source_id=job.source_id)
     db.session.add(draft)
-    db.session.flush()
+    _flush_with_retry()
+    # publish twice (existing behavior) with flush retries to survive locks
     job_event_broker.publish({"type": "draft", "payload": draft.serialize()})
-    db.session.flush()
+    _flush_with_retry()
     job_event_broker.publish({"type": "draft", "payload": draft.serialize()})
 
 
@@ -73,8 +87,6 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     job_event_broker.publish({"type": "job", "payload": job.serialize()})
     try:
         if job.ingest_strategy == "vision_pdf":
-            saved_questions = {"count": base_questions}
-
             def _progress(page_idx: int, total_pages: int, normalized_count: int, message: str | None = None) -> None:
                 job.processed_pages = page_idx
                 job.total_pages = total_pages
@@ -90,7 +102,8 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
 
             def _on_question(payload: dict) -> None:
                 _save_draft(job, payload)
-                saved_questions["count"] += 1
+                job.parsed_questions += 1
+                _commit_with_retry()
 
             pdf_ingest_service.ingest_pdf_document(
                 job.source_path,
@@ -102,7 +115,7 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 base_pages_completed=max_page_done,
                 base_questions=base_questions,
             )
-            job.total_blocks = saved_questions["count"]
+            job.total_blocks = job.parsed_questions
         else:
             blocks = _load_blocks(job)
             job.total_blocks = len(blocks)

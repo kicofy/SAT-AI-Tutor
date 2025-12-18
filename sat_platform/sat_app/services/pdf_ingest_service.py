@@ -1,4 +1,3 @@
-"""Vision-aware PDF ingestion powered by multimodal AI."""
 
 from __future__ import annotations
 
@@ -500,7 +499,7 @@ def _normalize_question(
     *,
     page_image_b64: str | None = None,
     attempt_hook: Optional[
-        Callable[[Literal["start", "retry"], int, int, float, Exception | None], None]
+        Callable[[Literal["start", "retry"], int, int, float, Optional[Exception]], None]
     ] = None,
     job_id: int | None = None,
 ) -> dict:
@@ -549,8 +548,6 @@ def _normalize_question(
     }
     if page_image_b64:
         payload["input"][1]["content"].append({"type": "input_image", "image_url": page_image_b64})
-    if page_image_b64:
-        payload["input"][1]["content"].append({"type": "input_image", "image_url": page_image_b64})
     raw_text = _call_responses_api(
         payload,
         purpose="question normalization",
@@ -559,6 +556,10 @@ def _normalize_question(
     )
     data = json.loads(raw_text)
     difficulty_assessment = data.pop("difficulty_assessment", None)
+
+    # Keep only fields recognized by the schema; drop relationships/unknown keys
+    allowed_fields = set(question_schema.fields.keys())
+    data = {k: v for k, v in data.items() if k in allowed_fields}
 
     data["section"] = _coerce_section(data.get("section"))
     # Normalize choice figure keys: list of uppercase letters.
