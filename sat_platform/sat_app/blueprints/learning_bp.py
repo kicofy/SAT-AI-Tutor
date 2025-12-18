@@ -28,6 +28,7 @@ from ..services import (
     diagnostic_service,
     membership_service,
     question_explanation_service,
+    progress_service,
 )
 from ..extensions import db, limiter
 from ..utils.signed_urls import sign_payload, verify_payload
@@ -357,6 +358,13 @@ def tutor_notes_today():
 @jwt_required()
 def coach_notes_legacy():
     return tutor_notes_today()
+
+
+@learning_bp.get("/progress/today")
+@jwt_required()
+def progress_today():
+    data = progress_service.get_today_progress(current_user.id)
+    return jsonify({"progress": data})
 
 def _resolve_user_language(user):
     profile = getattr(user, "profile", None)

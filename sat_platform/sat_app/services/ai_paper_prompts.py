@@ -707,8 +707,8 @@ def build_math_question_prompt(
         Output JSON with:
         {{
           "stem_text": "Problem statement with necessary context",
-          "choices": {{"A":"...", "B":"...", "C":"...", "D":"..."}},  # omit for SPR and supply numeric answer only
-          "correct_answer": {{"value":"C"}},
+          "choices": {{"A":"...", "B":"...", "C":"...", "D":"..."}},  # omit for SPR (fill-in) and supply numeric answer only
+          "correct_answer": {{"value":"C"}},  # for SPR, set to the canonical numeric/text answer (e.g., "7/2" or "2\\pi")
           "has_figure": {str(requires_figure).lower()},
           "metadata": {{
              "content_domain": "{domain_meta['domain']}",
@@ -717,6 +717,14 @@ def build_math_question_prompt(
           }},
           "skill_tags": {skill_tags},
           "solution_outline": "Step-by-step reasoning in English",
+          "answer_schema": {{
+             "type": "numeric or text",
+             "acceptable": ["all scoring-equivalent forms for SPR (e.g., 7/2, 3.5, 3\\tfrac{{1}}{{2}})", "..."],
+             "tolerance": null,
+             "allow_fraction": true,
+             "allow_pi": true,
+             "strip_spaces": true
+          }},  # include this block for SPR; list every form that should earn credit
           "figure_prompt": "Detailed description for diagrams (if needed)"
         }}
 
@@ -725,6 +733,10 @@ def build_math_question_prompt(
         • Ensure the correct answer demands reasoning, not guessable patterns.
         • Distractors should reflect common algebraic or arithmetic missteps.
         • Start the stem with one of these SAT-style prompts: {stem_template_text}. Keep it to ≤3 sentences (≤20 words each).
+        • For SPR (fill-in): NO choices. Provide canonical answer AND populate answer_schema.acceptable with all credit-worthy forms
+          (fractions, simplified radicals, π forms, equivalent decimals if exact, and sign/ordering variants when applicable).
+        • SAT grid-in length: keep each acceptable answer ≤5 characters. Decimal point counts toward the 5; leading minus sign does not.
+          Prefer exact/simplified fractions or terminating decimals that fit the limit; for repeating decimals, give a rounded form that fits.
         """
     ).strip()
 

@@ -25,6 +25,7 @@ from ..schemas.question_schema import QuestionCreateSchema
 from .openai_log import log_event
 from .skill_taxonomy import canonicalize_tags, iter_skill_tags
 from .difficulty_service import difficulty_prompt_block
+from .validation_service import validate_question, record_issues
 from . import ai_explainer
 from . import question_explanation_service
 
@@ -508,7 +509,8 @@ def _normalize_question(
         "- choices: object whose keys are capital letters (A,B,C,...) and values are choice texts. If the item is NOT multiple-choice, set choices to {}.\n"
         "- question_type: \"choice\" for multiple-choice, \"fill\" for student-produced response (SPR). If there are no valid lettered choices, default to \"fill\".\n"
         "- correct_answer: object like {\"value\": \"A\"} for MCQ, or {\"value\": \"3.5\"} for fill.\n"
-        "- answer_schema: for fill questions, include a dict: {\"type\": \"numeric\" or \"text\", \"acceptable\": [...], \"tolerance\": number|null, \"allow_fraction\": true, \"allow_pi\": true, \"strip_spaces\": true}. For MCQ leave null or omit.\n"
+        "- answer_schema: for fill questions, include a dict: {\"type\": \"numeric\" or \"text\", \"acceptable\": [...], \"tolerance\": number|null, \"allow_fraction\": true, \"allow_pi\": true, \"strip_spaces\": true}. **List EVERY scoring-equivalent form** (fractions, decimals, π forms, simplified radicals, sign variants when applicable). If only a canonical value is known, still place it in acceptable.\n"
+        "  SAT grid-in length rule: each acceptable answer must be ≤5 characters; decimal point counts; leading minus sign does NOT count. Prefer exact/simplified fractions or terminating decimals that fit; for repeating decimals, provide a rounded form within 5 chars.\n"
         "- has_figure: boolean for figures/tables that belong to the passage/stem (not the answer options).\n"
         "- choice_figure_keys: array of choice letters that rely on their OWN figure/table/image inside the option. Use uppercase letters. If no option has its own figure, return an empty array. Do NOT set has_figure just because an option contains a figure; use choice_figure_keys instead.\n"
         "- difficulty_level: integer 1-5. "
@@ -589,7 +591,7 @@ def _normalize_question(
     else:
         data["question_type"] = data.get("question_type") or "choice"
 
-    # Build a minimal answer_schema for fill-in questions when choices are empty
+    # Build/validate answer_schema for fill-in questions; require acceptable answers
     if data["question_type"] == "fill":
         answer_schema = data.get("answer_schema") or {}
         if not isinstance(answer_schema, dict):
@@ -598,8 +600,14 @@ def _normalize_question(
         if correct_val is not None:
             acc = answer_schema.get("acceptable") or []
             if not acc:
-                answer_schema["acceptable"] = [correct_val]
+                answer_schema["acceptable"] = [str(correct_val).strip()]
         answer_schema.setdefault("type", "numeric" if _parse_numeric_str(correct_val) is not None else "text")
+        answer_schema.setdefault("allow_fraction", True)
+        answer_schema.setdefault("allow_pi", True)
+        answer_schema.setdefault("strip_spaces", True)
+        acceptable = answer_schema.get("acceptable") or []
+        if not acceptable:
+            raise ValueError("Fill question missing acceptable answers")
         data["answer_schema"] = answer_schema
     raw_answer = data.get("correct_answer")
     if isinstance(raw_answer, str):
@@ -649,6 +657,12 @@ def _normalize_question(
                 metadata = {}
             metadata["ai_solution"] = reasoning
             normalized["metadata"] = metadata
+    # Validate normalized question; if invalid, record issues and skip
+    temp_question = Question(**normalized)
+    valid, issues = validate_question(temp_question)
+    if not valid:
+        record_issues(temp_question, issues)
+        return None
     return normalized
 
 

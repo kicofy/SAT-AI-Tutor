@@ -35,6 +35,7 @@ import {
 import { extractErrorMessage } from "@/lib/errors";
 import { AxiosError } from "axios";
 import { env } from "@/lib/env";
+import { getClientToken } from "@/lib/auth-storage";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAuthStore } from "@/stores/auth-store";
 import { getQuestionDecorations } from "@/lib/question-decorations";
@@ -276,8 +277,22 @@ export function PracticeView({
 
   const currentQuestion: SessionQuestion | undefined =
     session?.questions_assigned[currentIndex];
-  const isFillQuestion = (currentQuestion?.question_type || "choice") === "fill";
-  const showChoiceList = !isFillQuestion && currentQuestion?.choices && Object.keys(currentQuestion.choices).length;
+
+  const isFillQuestion = useMemo(() => {
+    const type = (currentQuestion?.question_type || "choice").toLowerCase();
+    const choiceCount = currentQuestion?.choices
+      ? Object.keys(currentQuestion.choices || {}).length
+      : 0;
+    const hasNoChoices = choiceCount === 0;
+    const hasAnswerSchema = Boolean(currentQuestion?.answer_schema);
+    // Fallback: if marked choice but no options and has answer schema, treat as fill.
+    if (type === "fill") return true;
+    if ((type === "choice" || !type) && hasNoChoices && hasAnswerSchema) return true;
+    return false;
+  }, [currentQuestion]);
+
+  const showChoiceList =
+    !isFillQuestion && currentQuestion?.choices && Object.keys(currentQuestion.choices).length;
 
   const choiceFigureIds = useMemo(() => {
     const set = new Set<number>();
@@ -354,10 +369,36 @@ export function PracticeView({
     return `${displayUid} · #${currentQuestion.question_id}`;
   }, [currentQuestion]);
 
-  const isQuestionUnavailable = Boolean(currentQuestion?.unavailable_reason);
-  const questionUnavailableMessage = currentQuestion?.unavailable_reason
-    ? t("practice.unavailable.message")
-    : "";
+  const choiceCount = currentQuestion?.choices
+    ? Object.keys(currentQuestion.choices || {}).length
+    : 0;
+  const hasMissingChoices =
+    !!currentQuestion &&
+    !isFillQuestion &&
+    (currentQuestion.question_type === "choice" || !currentQuestion.question_type) &&
+    choiceCount === 0;
+  const hasMissingAnswer =
+    !!currentQuestion &&
+    (currentQuestion.question_type === "choice" ||
+      currentQuestion.question_type === "fill" ||
+      !currentQuestion.question_type) &&
+    (!currentQuestion.correct_answer || currentQuestion.correct_answer?.value == null);
+
+  const derivedUnavailableReason =
+    currentQuestion?.unavailable_reason ||
+    (hasMissingChoices ? "missing_choices" : hasMissingAnswer ? "missing_answer" : "");
+
+  const isQuestionUnavailable = Boolean(derivedUnavailableReason);
+  const questionUnavailableMessage = (() => {
+    if (!derivedUnavailableReason) return "";
+    if (derivedUnavailableReason === "missing_choices") {
+      return "This question is unavailable because the choices are missing.";
+    }
+    if (derivedUnavailableReason === "missing_answer") {
+      return "This question is unavailable because the answer data is missing.";
+    }
+    return t("practice.unavailable.message" as any);
+  })();
 
   useEffect(() => {
     if (!explanation) {
@@ -1428,9 +1469,7 @@ useEffect(() => {
             </div>
               {isFillQuestion ? (
                 <div className="space-y-2">
-                  <label className="text-sm text-white/70">
-                    {t("practice.input.fillPlaceholder", "Enter your answer")}
-                  </label>
+                  <label className="text-sm text-white/70">Enter your answer</label>
                   <input
                     type="text"
                     value={selectedChoice ?? ""}
@@ -1440,7 +1479,7 @@ useEffect(() => {
                     }}
                     disabled={isQuestionUnavailable || hasChecked}
                     className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-white placeholder:text-white/40 focus:border-white/40 focus:outline-none"
-                    placeholder={t("practice.input.fillExample", "e.g., 3.5 or 7/2")}
+                    placeholder="e.g., 3.5 or 7/2"
                   />
                 </div>
               ) : showChoiceList ? (

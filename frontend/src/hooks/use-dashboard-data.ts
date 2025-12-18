@@ -1,7 +1,12 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { getTutorNotes, getMasterySnapshot, getTodayPlan } from "@/services/learning";
+import {
+  getTutorNotes,
+  getMasterySnapshot,
+  getTodayPlan,
+  getTodayProgress,
+} from "@/services/learning";
 import { getProgressHistory } from "@/services/analytics";
 import { useAuthStore } from "@/stores/auth-store";
 import { getDiagnosticStatus } from "@/services/diagnostic";
@@ -41,6 +46,12 @@ export function useDashboardData() {
     enabled: Boolean(userId),
   });
 
+  const todayProgressQuery = useQuery({
+    queryKey: ["today-progress", userId],
+    queryFn: getTodayProgress,
+    enabled: Boolean(userId),
+  });
+
   const languagePref = useAuthStore(
     (state) =>
       state.user?.profile?.language_preference?.toLowerCase().includes("zh") ? "zh" : "en"
@@ -56,6 +67,7 @@ export function useDashboardData() {
     planQuery,
     masteryQuery,
     progressQuery,
+    todayProgressQuery,
     tutorNotesQuery,
   };
 }

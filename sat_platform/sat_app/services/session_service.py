@@ -19,6 +19,28 @@ from . import adaptive_engine, spaced_repetition, analytics_service
 from .difficulty_service import update_question_difficulty_stats
 
 
+def _is_question_valid(question: Question | None) -> bool:
+    if question is None:
+        return False
+    if not getattr(question, "stem_text", None):
+        return False
+    qtype = (getattr(question, "question_type", None) or "choice").lower()
+    if qtype == "choice":
+        choices = getattr(question, "choices", {}) or {}
+        if not isinstance(choices, dict) or len(choices.keys()) == 0:
+            return False
+        correct = getattr(question, "correct_answer", {}) or {}
+        if not isinstance(correct, dict) or correct.get("value") in (None, ""):
+            return False
+    if qtype == "fill":
+        correct = getattr(question, "correct_answer", {}) or {}
+        schema = getattr(question, "answer_schema", {}) or {}
+        has_acceptables = isinstance(schema, dict) and bool(schema.get("acceptable"))
+        if correct.get("value") in (None, "") and not has_acceptables:
+            return False
+    return True
+
+
 def _round_robin_by_difficulty(candidates: Iterable[Question], limit: int) -> List[Question]:
     """Ensure we don't return only 'easy' questions when variety exists."""
     buckets: Dict[int, List[Question]] = {}
@@ -71,7 +93,7 @@ def select_questions(
         include_due=include_due,
         last_summary=last_summary,
     )
-    filtered: List[Question] = [q for q in initial if q.id not in excluded_set]
+    filtered: List[Question] = [q for q in initial if q.id not in excluded_set and _is_question_valid(q)]
     initial_count = len(filtered)
     if len(filtered) >= num_questions:
         final_selection = filtered[:num_questions]
@@ -108,14 +130,20 @@ def select_questions(
         query = query.filter_by(section=section)
     if focus_skill:
         filtered_query = query.filter(Question.skill_tags.contains([focus_skill]))
-        fallback = [q for q in filtered_query.order_by(db.func.random()).all() if q.id not in used_ids]
+        fallback = [
+            q
+            for q in filtered_query.order_by(db.func.random()).all()
+            if q.id not in used_ids and _is_question_valid(q)
+        ]
         if not fallback:
-            fallback = [q for q in query.order_by(db.func.random()).all() if q.id not in used_ids]
+            fallback = [
+                q for q in query.order_by(db.func.random()).all() if q.id not in used_ids and _is_question_valid(q)
+            ]
         prioritized = [q for q in fallback if focus_skill in (q.skill_tags or [])]
         prioritized.extend([q for q in fallback if focus_skill not in (q.skill_tags or [])])
         extras = _round_robin_by_difficulty(prioritized, needed)
     else:
-        fallback = [q for q in query.order_by(db.func.random()).all() if q.id not in used_ids]
+        fallback = [q for q in query.order_by(db.func.random()).all() if q.id not in used_ids and _is_question_valid(q)]
         extras = _round_robin_by_difficulty(fallback, needed)
 
     filtered.extend(extras)
@@ -527,12 +555,12 @@ def _select_replacement_question(
             query = query.filter(or_(*conditions))
     if exclude_ids:
         query = query.filter(~Question.id.in_(exclude_ids))
-    candidates = query.order_by(db.func.random()).limit(10).all()
+    candidates = [q for q in query.order_by(db.func.random()).limit(10).all() if _is_question_valid(q)]
     if not candidates and section:
         fallback = Question.query.filter(Question.section == section)
         if exclude_ids:
             fallback = fallback.filter(~Question.id.in_(exclude_ids))
-        candidates = fallback.order_by(db.func.random()).limit(10).all()
+        candidates = [q for q in fallback.order_by(db.func.random()).limit(10).all() if _is_question_valid(q)]
     if not candidates:
         return None
     if skill_tags:

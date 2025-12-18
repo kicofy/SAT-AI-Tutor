@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Ingest & Question Parsing Flow</title>
+    <style>
+      :root {
+        --bg: #0c1527;
+        --card: #111c33;
+        --accent: #4d6bff;
+        --muted: #9fb3d6;
+        --text: #e8f0ff;
+        --border: #203052;
+        --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        background: radial-gradient(80% 100% at 50% 0%, #142142, #0b1325);
+        color: var(--text);
+        margin: 0;
+        padding: 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        letter-spacing: 0.4px;
+      }
+      p.lead {
+        margin: 0 0 24px;
+        color: var(--muted);
+      }
+      .board {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 20px;
+        box-shadow: var(--shadow);
+      }
+      .swimlanes {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 14px;
+      }
+      .lane {
+        background: linear-gradient(180deg, #132241, #0f1b32);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .lane h3 {
+        margin: 0 0 8px;
+        font-size: 16px;
+        color: #caddff;
+      }
+      .step {
+        position: relative;
+        background: #0b162c;
+        border: 1px solid #1f3054;
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
+      }
+      .step:last-child {
+        margin-bottom: 0;
+      }
+      .step .title {
+        font-weight: 700;
+        font-size: 14px;
+        margin-bottom: 4px;
+      }
+      .step .desc {
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(77, 107, 255, 0.15);
+        color: #dbe6ff;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(77, 107, 255, 0.4);
+        font-weight: 600;
+        font-size: 12px;
+        margin-bottom: 10px;
+      }
+      .note {
+        margin-top: 16px;
+        padding: 12px;
+        border-radius: 12px;
+        background: #10203b;
+        border: 1px dashed #25406d;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .flow-line {
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+        margin: 18px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>PDF → 标准化题目数据 · 节点式流程</h1>
+    <p class="lead">输入：PDF；输出：可分配的标准化题目数据（题干/选项/答案齐全）。</p>
+
+    <div class="board" style="padding: 16px;">
+      <svg viewBox="0 0 1180 640" width="100%" height="100%" style="max-height: 740px;">
+        <defs>
+          <linearGradient id="node" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#1b2c4f" />
+            <stop offset="100%" stop-color="#15213e" />
+          </linearGradient>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#4d6bff" />
+          </marker>
+        </defs>
+
+        <!-- Linear flow nodes -->
+        <g>
+          <rect x="40" y="60" rx="10" ry="10" width="200" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="60" y="95" fill="#e8f0ff" font-size="14" font-weight="700">上传 PDF</text>
+          <text x="60" y="118" fill="#9fb3d6" font-size="12">携元数据，生成任务ID</text>
+
+          <rect x="280" y="60" rx="10" ry="10" width="200" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="300" y="95" fill="#e8f0ff" font-size="14" font-weight="700">存储 & 排队</text>
+          <text x="300" y="118" fill="#9fb3d6" font-size="12">临时存储，入队异步解析</text>
+
+          <rect x="520" y="60" rx="10" ry="10" width="200" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="540" y="95" fill="#e8f0ff" font-size="14" font-weight="700">页面/图像拆分</text>
+          <text x="540" y="118" fill="#9fb3d6" font-size="12">提取文本/图片，记录 bbox</text>
+
+          <rect x="760" y="60" rx="10" ry="10" width="200" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="780" y="95" fill="#e8f0ff" font-size="14" font-weight="700">题目解析</text>
+          <text x="780" y="118" fill="#9fb3d6" font-size="12">识别题号、题干、选项/图片</text>
+
+          <rect x="1000" y="60" rx="10" ry="10" width="160" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="1020" y="95" fill="#e8f0ff" font-size="14" font-weight="700">标准化</text>
+          <text x="1020" y="118" fill="#9fb3d6" font-size="12">题型归一、清洗</text>
+
+          <line x1="240" y1="100" x2="280" y2="100" stroke="#4d6bff" stroke-width="2" marker-end="url(#arrow)" />
+          <line x1="480" y1="100" x2="520" y2="100" stroke="#4d6bff" stroke-width="2" marker-end="url(#arrow)" />
+          <line x1="720" y1="100" x2="760" y2="100" stroke="#4d6bff" stroke-width="2" marker-end="url(#arrow)" />
+          <line x1="960" y1="100" x2="1000" y2="100" stroke="#4d6bff" stroke-width="2" marker-end="url(#arrow)" />
+        </g>
+
+        <!-- Second row: QC and storage -->
+        <g>
+          <rect x="180" y="250" rx="10" ry="10" width="220" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="200" y="285" fill="#e8f0ff" font-size="14" font-weight="700">质量校验</text>
+          <text x="200" y="308" fill="#9fb3d6" font-size="12">无题干/无选项/缺答案 → invalid</text>
+
+          <rect x="480" y="250" rx="10" ry="10" width="220" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="500" y="285" fill="#e8f0ff" font-size="14" font-weight="700">入库</text>
+          <text x="500" y="308" fill="#9fb3d6" font-size="12">questions & figures</text>
+
+          <rect x="780" y="250" rx="10" ry="10" width="220" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="800" y="285" fill="#e8f0ff" font-size="14" font-weight="700">标记可分配</text>
+          <text x="800" y="308" fill="#9fb3d6" font-size="12">仅 valid 题可用于练习/计划</text>
+
+          <line x1="400" y1="290" x2="480" y2="290" stroke="#4d6bff" stroke-width="2" marker-end="url(#arrow)" />
+          <line x1="700" y1="290" x2="780" y2="290" stroke="#4d6bff" stroke-width="2" marker-end="url(#arrow)" />
+        </g>
+
+        <!-- Third row: Output -->
+        <g>
+          <rect x="360" y="440" rx="10" ry="10" width="260" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="380" y="475" fill="#e8f0ff" font-size="14" font-weight="700">输出：标准化题目数据</text>
+          <text x="380" y="498" fill="#9fb3d6" font-size="12">题干/选项/答案/技能标签/图片</text>
+
+          <rect x="700" y="440" rx="10" ry="10" width="240" height="80" fill="url(#node)" stroke="#203052" />
+          <text x="720" y="475" fill="#e8f0ff" font-size="14" font-weight="700">分配消费</text>
+          <text x="720" y="498" fill="#9fb3d6" font-size="12">Practice/Plan 选题过滤 invalid</text>
+
+          <line x1="620" y1="480" x2="700" y2="480" stroke="#4d6bff" stroke-width="2" marker-end="url(#arrow)" />
+        </g>
+
+        <!-- Vertical connectors -->
+        <line x1="120" y1="140" x2="120" y2="250" stroke="#2f436a" stroke-dasharray="4 4" />
+        <line x1="340" y1="140" x2="290" y2="250" stroke="#2f436a" stroke-dasharray="4 4" />
+        <line x1="620" y1="140" x2="590" y2="250" stroke="#2f436a" stroke-dasharray="4 4" />
+        <line x1="880" y1="140" x2="890" y2="250" stroke="#2f436a" stroke-dasharray="4 4" />
+        <line x1="890" y1="330" x2="490" y2="440" stroke="#2f436a" stroke-dasharray="4 4" />
+
+        <!-- Legend -->
+        <rect x="40" y="560" rx="10" ry="10" width="290" height="70" fill="#0f1c32" stroke="#203052" />
+        <text x="60" y="592" fill="#e8f0ff" font-size="13" font-weight="700">规则保障</text>
+        <text x="60" y="612" fill="#9fb3d6" font-size="12">无题干/无选项/缺答案一律标记 invalid，不进入分配</text>
+      </svg>
+    </div>
+  </body>
+</html>
+

@@ -13,6 +13,28 @@ from . import spaced_repetition
 from .skill_taxonomy import canonicalize_tag, canonicalize_tags, describe_skill, iter_skill_tags
 
 
+def _is_question_valid(question: Question | None) -> bool:
+    if question is None:
+        return False
+    if not getattr(question, "stem_text", None):
+        return False
+    qtype = (getattr(question, "question_type", None) or "choice").lower()
+    if qtype == "choice":
+        choices = getattr(question, "choices", {}) or {}
+        if not isinstance(choices, dict) or len(choices.keys()) == 0:
+            return False
+        correct = getattr(question, "correct_answer", {}) or {}
+        if not isinstance(correct, dict) or correct.get("value") in (None, ""):
+            return False
+    if qtype == "fill":
+        correct = getattr(question, "correct_answer", {}) or {}
+        schema = getattr(question, "answer_schema", {}) or {}
+        has_acceptables = isinstance(schema, dict) and bool(schema.get("acceptable"))
+        if correct.get("value") in (None, "") and not has_acceptables:
+            return False
+    return True
+
+
 def _initial_mastery() -> float:
     return float(current_app.config.get("ADAPTIVE_DEFAULT_MASTERY", 0.5))
 
@@ -204,6 +226,8 @@ def select_next_questions(
             user_id, limit=num_questions, section=section, focus_skill=focus_skill
         )
         for q in due_questions:
+            if not _is_question_valid(q):
+                continue
             if q.id in seen_ids:
                 continue
             selected.append(q)
@@ -219,13 +243,13 @@ def select_next_questions(
     base_query = query
     if focus_skill:
         skill_filtered = query.filter(Question.skill_tags.contains([focus_skill]))
-        candidates = skill_filtered.all()
+        candidates = [q for q in skill_filtered.all() if _is_question_valid(q)]
         if not candidates:
-            candidates = base_query.all()
+            candidates = [q for q in base_query.all() if _is_question_valid(q)]
         else:
             query = skill_filtered
     else:
-        candidates = query.all()
+        candidates = [q for q in query.all() if _is_question_valid(q)]
 
     scored = []
     for question in candidates:

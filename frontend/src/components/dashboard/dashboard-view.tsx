@@ -6,6 +6,7 @@ import { AxiosError } from "axios";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/app-shell";
 import { PlanBlocks } from "@/components/dashboard/plan-blocks";
+import { ProgressSummary } from "@/components/dashboard/progress-summary";
 import { MasteryProgress } from "@/components/dashboard/mastery-progress";
 import { useDashboardData } from "@/hooks/use-dashboard-data";
 import { PlanBlock, PlanTask, ProgressEntry, StudyPlanDetail } from "@/types/learning";
@@ -80,7 +81,14 @@ function deriveHighlights(
 }
 
 export function DashboardView() {
-  const { planQuery, masteryQuery, progressQuery, tutorNotesQuery, diagnosticQuery } =
+  const {
+    planQuery,
+    masteryQuery,
+    progressQuery,
+    todayProgressQuery,
+    tutorNotesQuery,
+    diagnosticQuery,
+  } =
     useDashboardData();
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -204,6 +212,7 @@ export function DashboardView() {
     return tasks.find((task) => task.status === "active") ?? null;
   }, [planDetail?.tasks, planQuery.data?.tasks]);
   const sessionCount = progressQuery.data?.length ?? 0;
+  const todayProgress = todayProgressQuery.data;
   const handleSkipDiagnostic = useCallback(async () => {
     setSkipError(null);
     setSkippingDiagnostic(true);
@@ -310,6 +319,13 @@ export function DashboardView() {
                 <p className="mt-1 text-lg font-semibold">{stat.value}</p>
               </div>
             ))}
+          </div>
+          <div className="mt-6">
+            <ProgressSummary
+              progress={todayProgress}
+              isLoading={todayProgressQuery.isLoading}
+              error={todayProgressQuery.error}
+            />
           </div>
         </section>
 

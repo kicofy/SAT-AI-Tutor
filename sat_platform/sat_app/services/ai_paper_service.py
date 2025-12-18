@@ -28,6 +28,7 @@ from .ai_paper_prompts import (
 )
 from .openai_log import log_event
 from .pdf_ingest_service import _call_responses_api
+from .validation_service import validate_question, record_issues
 
 
 _JOB_CANCEL_EVENTS: Dict[int, threading.Event] = {}
@@ -554,6 +555,14 @@ def _create_question_from_prompt(
             continue
         try:
             question = question_service.create_question(payload, commit=False)
+            # Validate before committing
+            valid, issues = validate_question(question)
+            if not valid:
+                record_issues(question, issues)
+                current_app.logger.warning(
+                    "AI paper slot %s failed validation: %s", slot_number, issues
+                )
+                continue
             return question
         except Exception as exc:  # pragma: no cover - defensive logging
             current_app.logger.exception(

@@ -49,6 +49,18 @@ export type ProgressEntry = {
   predicted_score_math?: number | null;
 };
 
+export type TodayProgress = {
+  plan_date: string;
+  target_questions: number;
+  target_minutes: number;
+  completed_questions: number;
+  completed_minutes: number;
+  streak_days: number;
+  streak_next_goal: number | null;
+  streak_goals: number[];
+  last_active_day: string | null;
+};
+
 export type PlanTask = {
   block_id: string;
   status: "pending" | "active" | "completed" | "expired";

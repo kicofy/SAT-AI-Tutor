@@ -1,5 +1,11 @@
 import { api } from "@/lib/http";
-import { TutorNotesResponse, MasteryEntry, PlanTask, StudyPlanDetail } from "@/types/learning";
+import {
+  TutorNotesResponse,
+  MasteryEntry,
+  PlanTask,
+  StudyPlanDetail,
+  TodayProgress,
+} from "@/types/learning";
 import { Session } from "@/types/session";
 
 export type PlanTodayResponse = {
@@ -46,5 +52,10 @@ export async function getTutorNotes(params?: { lang?: string }): Promise<TutorNo
     params,
   });
   return data;
+}
+
+export async function getTodayProgress(): Promise<TodayProgress> {
+  const { data } = await api.get<{ progress: TodayProgress }>("/api/learning/progress/today");
+  return data.progress;
 }
 
