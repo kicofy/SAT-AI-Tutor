@@ -837,7 +837,7 @@ def _normalize_passage(raw_value: Any) -> dict | None:
 
 
 AttemptHook = Callable[
-    [Literal["start", "retry", "success", "heartbeat"], int, int, float, Exception | None],
+    [Literal["start", "retry", "success", "heartbeat"], int, int, float, Optional[Exception]],
     None,
 ]
 
@@ -846,8 +846,8 @@ def _call_responses_api(
     payload: dict,
     *,
     purpose: str,
-    attempt_hook: AttemptHook | None = None,
-    job_id: int | None = None,
+    attempt_hook: Optional[AttemptHook] = None,
+    job_id: Optional[int] = None,
 ) -> str:
     app = current_app
     api_key = app.config.get("OPENAI_API_KEY")
