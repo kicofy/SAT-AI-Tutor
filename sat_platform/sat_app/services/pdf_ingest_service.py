@@ -1,15 +1,21 @@
-*** Begin Patch
-*** Update File: sat_platform/sat_app/services/pdf_ingest_service.py
-@@
--AttemptHook = Callable[
--    [Literal["start", "retry", "success", "heartbeat"], int, int, float, Optional[Exception]],
--    None,
--]
-+AttemptHook = Callable[
-+    [Literal["start", "retry", "success", "heartbeat"], int, int, float, Optional[Exception]],
-+    None,
-+]
-*** End PatchList, Optional, Literal
+"""Vision-aware PDF ingestion powered by multimodal AI."""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+import threading
+import time
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeout,
+    CancelledError,
+    wait,
+    FIRST_COMPLETED,
+)
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Literal
 
 import pdfplumber
 import requests
@@ -26,6 +32,11 @@ from . import question_explanation_service
 question_schema = QuestionCreateSchema()
 SKILL_TAG_PROMPT = ", ".join(iter_skill_tags())
 ProgressCallback = Callable[[int, int, int, Optional[str]], None]
+
+AttemptHook = Callable[
+    [Literal["start", "retry", "success", "heartbeat"], int, int, float, Optional[Exception]],
+    None,
+]
 
 
 def _parse_numeric_str(raw: Any) -> float | None:
