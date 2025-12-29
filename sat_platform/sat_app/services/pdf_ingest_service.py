@@ -276,10 +276,13 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                 meta["ai_solution"] = solved["solution"]
                 normalized["metadata"] = meta
 
-    # Explain (skip when figures to avoid hallucinated coords)
+    # Explain: configurable; default on for all, can skip for figure items via config
     has_fig = bool(normalized.get("has_figure"))
     choice_figs = normalized.get("choice_figure_keys") or []
-    if not has_fig and not choice_figs:
+    explain_enabled = bool(current_app.config.get("AI_EXPLAIN_ENABLE", True))
+    skip_when_fig = bool(current_app.config.get("AI_EXPLAIN_SKIP_WITH_FIGURES", False))
+    should_explain = explain_enabled and not (skip_when_fig and (has_fig or choice_figs))
+    if should_explain:
         explain_timeout = float(current_app.config.get("AI_EXPLAIN_TIMEOUT_SEC", 60))
         app_obj = current_app._get_current_object()
 
@@ -297,12 +300,22 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                     meta = {}
                 meta["ai_explanations"] = expl
                 normalized["metadata"] = meta
+            else:
+                current_app.logger.warning("Explanation generation returned empty result")
         except FutureTimeout:
             current_app.logger.warning("Explanation generation timed out after %.0fs", explain_timeout)
         except ai_explainer.AiExplainerError:
             current_app.logger.warning("Explanation skipped due to AI error")
         except Exception:
             current_app.logger.exception("Explanation generation failed")
+    else:
+        current_app.logger.info(
+            "Explanation skipped (has_figure=%s, choice_figs=%s, skip_when_fig=%s, enabled=%s)",
+            has_fig,
+            bool(choice_figs),
+            skip_when_fig,
+            explain_enabled,
+        )
 
     # Validate
     try:

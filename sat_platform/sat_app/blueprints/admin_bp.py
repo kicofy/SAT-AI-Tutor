@@ -22,8 +22,9 @@ from flask import Blueprint, Response, abort, current_app, jsonify, request, sen
 from flask_jwt_extended import current_user, jwt_required
 from marshmallow import ValidationError
 from werkzeug.utils import secure_filename
-from sqlalchemy import func, or_, case
+from sqlalchemy import func, or_, case, inspect
 from sqlalchemy.orm import joinedload
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from ..extensions import db
 from ..models import (
@@ -1704,7 +1705,7 @@ def publish_draft(draft_id: int):
     if not require_admin():
         return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
     draft = db.session.get(QuestionDraft, draft_id)
-    if not draft:
+    if not draft or inspect(draft).deleted:
         abort(404)
 
     def _publish():
@@ -1787,8 +1788,14 @@ def publish_draft(draft_id: int):
                 )
         else:
             post_publish_langs = missing_langs
+        # Ensure all pending state (question/figures) is flushed before removing draft
+        db.session.flush()
         db.session.delete(draft)
-        _commit_with_retry()
+        try:
+            _commit_with_retry()
+        except ObjectDeletedError:
+            db.session.rollback()
+            abort(404)
         if post_publish_langs:
             _spawn_background_explanations(question.id, post_publish_langs)
         job_event_broker.publish({"type": "draft_removed", "payload": {"id": draft_id}})
