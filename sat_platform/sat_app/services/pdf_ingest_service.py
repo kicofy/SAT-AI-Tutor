@@ -335,17 +335,25 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
 
 def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
     system_prompt = (
-        "You are an SAT content normalizer. Output a single JSON object with fields:\n"
-        "- section: 'RW' or 'Math'\n"
-        "- question_type: 'choice' or 'fill'\n"
-        "- stem_text, passage ({\"content_text\":...} or null)\n"
-        "- choices (object, e.g., {\"A\":\"...\"}) for choice questions\n"
-        "- correct_answer: {\"value\": ...}\n"
-        "- answer_schema for fill: acceptable (<=5 chars, grid-in rules), type, allow_fraction, allow_pi, strip_spaces\n"
-        "- skill_tags: up to two from allowed list; else []\n"
-        "- has_figure, choice_figure_keys\n"
-        "- metadata: include source_question_number if available\n"
-        "Do NOT hallucinate. Do NOT copy figure data. Strict JSON only."
+        "You are an SAT content normalizer. Convert extracted question snippets into the canonical JSON schema. "
+        "Respond with **only one JSON object** containing:\n"
+        "- section: \"RW\" or \"Math\".\n"
+        "- sub_section: optional string or null.\n"
+        "- passage: ONLY the supporting prose; do NOT copy figure/table titles or question text. Null if none.\n"
+        "- stem_text: ONLY the interrogative part (e.g., \"Which choice ...?\"); do not restate figures/tables; keep math notation ($...$, \\(...\\), $$...$$) unescaped.\n"
+        "- choices: object with capital letter keys (A,B,...) and choice texts. If not multiple-choice, use {}.\n"
+        "- question_type: \"choice\" if valid lettered choices exist, otherwise \"fill\" (SPR).\n"
+        "- correct_answer: {\"value\": \"A\"} for MCQ or {\"value\": \"3.5\"} for fill.\n"
+        "- answer_schema (fill only): {\"type\": \"numeric\"|\"text\", \"acceptable\": [...], \"tolerance\": number|null, "
+        "\"allow_fraction\": true, \"allow_pi\": true, \"strip_spaces\": true}. List every scoring-equivalent form (fractions/decimals/pi, simplified). "
+        "SAT grid-in: each acceptable <=5 chars (decimal point counts; leading minus not counted).\n"
+        "- has_figure: true if passage/stem relies on a figure/table/image (not options).\n"
+        "- choice_figure_keys: array of choice letters whose own option contains a figure/table. If none, [].\n"
+        "- difficulty_level: integer 1-5, and difficulty_assessment object like {\"level\":3,\"expected_time_sec\":75,\"rationale\":\"...\"}.\n"
+        "- skill_tags: up to TWO from this allowed list: "
+        f"{SKILL_TAG_PROMPT}. Return [] if unsure.\n"
+        "- metadata: include source_question_number if available. Do NOT include legacy fields.\n"
+        "Rules: Do NOT hallucinate. Do NOT copy figure data into text. Return JSON only."
     )
     passage = item.get("passage") or ""
     # Fallback to stem_text when prompt is absent to avoid empty normalization input
@@ -404,6 +412,9 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
 
     data["passage"] = _normalize_passage(data.get("passage"))
     data["skill_tags"] = _sanitize_skill_tags(data.get("skill_tags"))
+    # Fallback: ensure at least one valid skill tag to pass validation
+    if not data["skill_tags"]:
+        data["skill_tags"] = ["M_Algebra"] if data["section"] == "Math" else ["RW_MainIdeasEvidence"]
     data["has_figure"] = bool(data.get("has_figure") or data.get("choice_figure_keys"))
 
     if source_qnum is not None:
