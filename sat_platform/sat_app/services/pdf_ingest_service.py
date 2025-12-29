@@ -90,14 +90,6 @@ def ingest_pdf_document(
     if cancel_event and cancel_event.is_set():
         return []
 
-    current_app.logger.info(
-        "PDF ingest start | job_id=%s start_page=%s end_page=%s base_pages=%s base_questions=%s",
-        job_id,
-        start_page,
-        end_page,
-        base_pages_completed,
-        base_questions,
-    )
     pages = _extract_pages_seq(path, start_page=start_page, end_page=end_page, progress_cb=progress_cb)
     coarse_items: List[dict] = []
     if progress_cb:
@@ -110,13 +102,6 @@ def ingest_pdf_document(
             it["page"] = idx  # persist page for resume bookkeeping
             it["page_image_b64"] = p.get("page_image_b64")
             coarse_items.append(it)
-        current_app.logger.info(
-            "Coarse extracted | job_id=%s page=%s questions_on_page=%s coarse_total=%s",
-            job_id,
-            idx,
-            len(coarse),
-            len(coarse_items),
-        )
         if progress_cb:
             progress_cb(
                 idx,
@@ -130,14 +115,6 @@ def ingest_pdf_document(
     for i, item in enumerate(coarse_items, start=1):
         if cancel_event and cancel_event.is_set():
             break
-        current_app.logger.info(
-            "Enrich start | job_id=%s idx=%s/%s page=%s question_num=%s",
-            job_id,
-            i,
-            total,
-            item.get("page_index"),
-            _extract_question_number(item),
-        )
         eq = _enrich_item(item, job_id=job_id)
         if eq:
             enriched.append(eq)
@@ -150,17 +127,6 @@ def ingest_pdf_document(
                 base_questions + len(enriched),
                 f"Normalized {i}/{total}",
             )
-        else:
-            current_app.logger.info(
-                "Enrich skipped | job_id=%s idx=%s/%s page=%s", job_id, i, total, item.get("page_index")
-            )
-    current_app.logger.info(
-        "PDF ingest done | job_id=%s pages=%s coarse=%s normalized=%s",
-        job_id,
-        len(pages),
-        len(coarse_items),
-        len(enriched),
-    )
     return enriched
 
 
@@ -272,13 +238,6 @@ def _extract_coarse_questions(page: dict, *, job_id: int | None) -> List[dict]:
         ],
         "temperature": 0.1,
     }
-    current_app.logger.info(
-        "Coarse call -> page=%s job_id=%s has_image=%s text_len=%s",
-        page_index,
-        job_id,
-        bool(image_b64),
-        len(text),
-    )
     raw = _call_responses_api(payload, purpose=f"page {page_index} extraction", attempt_hook=None, job_id=job_id)
     try:
         data = json.loads(raw)
@@ -297,30 +256,13 @@ def _extract_coarse_questions(page: dict, *, job_id: int | None) -> List[dict]:
             item["has_figure"] = bool(q.get("has_figure"))
             item["highlights"] = _sanitize_highlights(q.get("highlights"))
             out.append(item)
-    current_app.logger.info(
-        "Coarse parsed <- page=%s job_id=%s questions=%s",
-        page_index,
-        job_id,
-        len(out),
-    )
     return out
 
 
 # ---------------- Stage 2: per-item enrichment ----------------
 def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
-    current_app.logger.info(
-        "Normalize start | job_id=%s page=%s qnum=%s has_fig=%s choices=%s",
-        job_id,
-        item.get("page_index"),
-        _extract_question_number(item),
-        item.get("has_figure"),
-        list((item.get("choices") or item.get("options") or {}).keys()) if isinstance(item.get("choices"), dict) else "n/a",
-    )
     normalized = _normalize_question_item(item, job_id=job_id)
     if not normalized:
-        current_app.logger.warning(
-            "Normalize failed/empty | job_id=%s page=%s qnum=%s", job_id, item.get("page_index"), _extract_question_number(item)
-        )
         return None
 
     # Solve if missing
@@ -339,12 +281,15 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
     choice_figs = normalized.get("choice_figure_keys") or []
     if not has_fig and not choice_figs:
         explain_timeout = float(current_app.config.get("AI_EXPLAIN_TIMEOUT_SEC", 60))
-        current_app.logger.info(
-            "Explain start | job_id=%s page=%s qnum=%s timeout=%ss", job_id, item.get("page_index"), _extract_question_number(item), explain_timeout
-        )
+        app_obj = current_app._get_current_object()
+
+        def _gen_expl(payload: dict):
+            with app_obj.app_context():
+                return question_explanation_service.generate_explanations_for_payload(payload)
+
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(question_explanation_service.generate_explanations_for_payload, normalized)
+                future = executor.submit(_gen_expl, normalized)
                 expl = future.result(timeout=explain_timeout)
             if expl:
                 meta = normalized.get("metadata") or {}
@@ -352,13 +297,10 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                     meta = {}
                 meta["ai_explanations"] = expl
                 normalized["metadata"] = meta
-                current_app.logger.info("Explain ok | job_id=%s page=%s qnum=%s", job_id, item.get("page_index"), _extract_question_number(item))
         except FutureTimeout:
-            current_app.logger.warning(
-                "Explain timeout | job_id=%s page=%s qnum=%s after %.0fs", job_id, item.get("page_index"), _extract_question_number(item), explain_timeout
-            )
+            current_app.logger.warning("Explanation generation timed out after %.0fs", explain_timeout)
         except ai_explainer.AiExplainerError:
-            current_app.logger.warning("Explain AI error | job_id=%s page=%s qnum=%s", job_id, item.get("page_index"), _extract_question_number(item))
+            current_app.logger.warning("Explanation skipped due to AI error")
         except Exception:
             current_app.logger.exception("Explanation generation failed")
 
@@ -377,9 +319,8 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
         temp_question = Question(**temp_for_validation)
         valid, issues = validate_question(temp_question)
         if not valid:
-            record_issues(temp_question, issues)
             current_app.logger.warning(
-                "Validation failed | job_id=%s page=%s qnum=%s issues=%s",
+                "Validation failed for job %s page %s qnum %s issues=%s",
                 job_id,
                 item.get("page_index"),
                 _extract_question_number(item),
@@ -387,17 +328,8 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
             )
             return None
     except Exception as exc:
-        current_app.logger.warning(
-            "Validation/load failed | job_id=%s page=%s qnum=%s err=%s",
-            job_id,
-            item.get("page_index"),
-            _extract_question_number(item),
-            exc,
-        )
+        current_app.logger.warning("Validation/load failed: %s", exc)
         return None
-    current_app.logger.info(
-        "Enrich done | job_id=%s page=%s qnum=%s", job_id, item.get("page_index"), _extract_question_number(item)
-    )
     return temp_data
 
 
@@ -445,33 +377,12 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
         ],
         "temperature": 0.1,
     }
-    current_app.logger.info(
-        "Norm call -> job_id=%s model=%s page=%s qnum=%s has_image=%s",
-        job_id,
-        payload.get("model"),
-        item.get("page_index"),
-        source_qnum,
-        bool(item.get("page_image_b64")) and (has_figure or item.get("choice_figure_keys")),
-    )
     raw = _call_responses_api(payload, purpose="question normalization", attempt_hook=None, job_id=job_id)
     try:
         data = json.loads(raw)
     except Exception:
-        current_app.logger.warning(
-            "Normalize JSON parse failed | job_id=%s page=%s qnum=%s raw=%s",
-            job_id,
-            item.get("page_index"),
-            source_qnum,
-            raw[:400],
-        )
+        current_app.logger.warning("Normalize JSON parse failed: %s", raw[:200])
         return None
-    current_app.logger.info(
-        "Norm parsed <- job_id=%s page=%s qnum=%s keys=%s",
-        job_id,
-        item.get("page_index"),
-        source_qnum,
-        sorted(list(data.keys())),
-    )
 
     norm_choices = _normalize_choices(data.get("choices"))
     data["choices"] = norm_choices if norm_choices else None
@@ -502,16 +413,6 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
         meta["source_question_number"] = source_qnum
         data["metadata"] = meta
 
-    current_app.logger.info(
-        "Norm ready | job_id=%s page=%s qnum=%s type=%s section=%s choices=%s has_fig=%s",
-        job_id,
-        item.get("page_index"),
-        source_qnum,
-        data.get("question_type"),
-        data.get("section"),
-        list((data.get("choices") or {}).keys()) if isinstance(data.get("choices"), dict) else None,
-        data.get("has_figure"),
-    )
     return data
 
 
