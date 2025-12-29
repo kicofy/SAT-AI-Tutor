@@ -100,6 +100,7 @@ def ingest_pdf_document(
         coarse = _extract_coarse_questions(p, job_id=job_id)
         for it in coarse:
             it["page_index"] = idx
+            it["page"] = idx  # persist page for resume bookkeeping
             it["page_image_b64"] = p.get("page_image_b64")
             coarse_items.append(it)
         if progress_cb:
@@ -251,6 +252,7 @@ def _extract_coarse_questions(page: dict, *, job_id: int | None) -> List[dict]:
             if not isinstance(q, dict):
                 continue
             item = dict(q)
+            item["page"] = page_index
             item["source_question_number"] = _extract_question_number(q)
             item["has_figure"] = bool(q.get("has_figure"))
             item["highlights"] = _sanitize_highlights(q.get("highlights"))
