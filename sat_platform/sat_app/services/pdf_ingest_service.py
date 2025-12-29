@@ -9,6 +9,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Literal
@@ -280,7 +281,12 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
         try:
             expl = question_explanation_service.generate_explanations_for_payload(normalized)
             if expl:
-                normalized["_ai_explanations"] = expl
+                # Store explanations in metadata to avoid schema rejection
+                meta = normalized.get("metadata") or {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta["ai_explanations"] = expl
+                normalized["metadata"] = meta
         except ai_explainer.AiExplainerError:
             pass
         except Exception:
@@ -288,6 +294,8 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
 
     # Validate
     try:
+        # Drop any transient fields not in schema
+        normalized.pop("_ai_explanations", None)
         temp = question_schema.load(normalized)
         valid, issues = validate_question(temp)
         if not valid:
