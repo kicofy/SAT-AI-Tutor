@@ -9,7 +9,6 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Literal
@@ -297,15 +296,16 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
 
     # Validate
     try:
-        # Drop any transient fields not in schema
         normalized.pop("_ai_explanations", None)
         temp_data = question_schema.load(normalized)
-        # The schema may emit a nested passage dict; drop it to avoid assigning a
-        # plain dict into the SQLAlchemy relationship during validation.
+        # Avoid assigning plain dict into SA relationship
         temp_data.pop("passage", None)
-        # choice_figure_keys is not a column on Question; exclude for validation.
-        temp_for_validation = dict(temp_data)
-        temp_for_validation.pop("choice_figure_keys", None)
+        # Map metadata to column if needed
+        model_columns = {col.key for col in Question.__table__.columns}
+        if "metadata" in temp_data and "metadata_json" in model_columns:
+            temp_data["metadata_json"] = temp_data.pop("metadata")
+        # Keep only actual model columns (drop extras like choice_figure_keys)
+        temp_for_validation = {k: v for k, v in temp_data.items() if k in model_columns}
         temp_question = Question(**temp_for_validation)
         valid, issues = validate_question(temp_question)
         if not valid:
@@ -953,12 +953,23 @@ def _normalize_question(
             metadata["ai_solution"] = reasoning
             normalized["metadata"] = metadata
     # Validate normalized question; if invalid, record issues and skip
-    temp_question = Question(**normalized)
-    valid, issues = validate_question(temp_question)
-    if not valid:
-        record_issues(temp_question, issues)
+    try:
+        normalized.pop("_ai_explanations", None)
+        temp_data = question_schema.load(normalized)
+        temp_data.pop("passage", None)
+        model_columns = {col.key for col in Question.__table__.columns}
+        if "metadata" in temp_data and "metadata_json" in model_columns:
+            temp_data["metadata_json"] = temp_data.pop("metadata")
+        temp_for_validation = {k: v for k, v in temp_data.items() if k in model_columns}
+        temp_question = Question(**temp_for_validation)
+        valid, issues = validate_question(temp_question)
+        if not valid:
+            record_issues(temp_question, issues)
+            return None
+    except Exception as exc:
+        current_app.logger.warning("Validation/load failed: %s", exc)
         return None
-    return normalized
+    return temp_data
 
 
 def _attach_precomputed_explanations(payload: dict) -> None:
