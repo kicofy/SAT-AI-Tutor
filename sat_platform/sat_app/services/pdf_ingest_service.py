@@ -303,7 +303,10 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
         # The schema may emit a nested passage dict; drop it to avoid assigning a
         # plain dict into the SQLAlchemy relationship during validation.
         temp_data.pop("passage", None)
-        temp_question = Question(**temp_data)
+        # choice_figure_keys is not a column on Question; exclude for validation.
+        temp_for_validation = dict(temp_data)
+        temp_for_validation.pop("choice_figure_keys", None)
+        temp_question = Question(**temp_for_validation)
         valid, issues = validate_question(temp_question)
         if not valid:
             record_issues(temp_question, issues)
