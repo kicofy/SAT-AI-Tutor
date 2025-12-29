@@ -309,14 +309,16 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
         normalized.pop("_ai_explanations", None)
         normalized.pop("difficulty_assessment", None)
         temp_data = question_schema.load(normalized)
+        # Use a copy for validation so we don't lose passage in returned payload
+        temp_for_validation = dict(temp_data)
         # Avoid assigning plain dict into SA relationship
-        temp_data.pop("passage", None)
+        temp_for_validation.pop("passage", None)
         # Map metadata to column if needed
         model_columns = {col.key for col in Question.__table__.columns}
-        if "metadata" in temp_data and "metadata_json" in model_columns:
-            temp_data["metadata_json"] = temp_data.pop("metadata")
+        if "metadata" in temp_for_validation and "metadata_json" in model_columns:
+            temp_for_validation["metadata_json"] = temp_for_validation.pop("metadata")
         # Keep only actual model columns (drop extras like choice_figure_keys)
-        temp_for_validation = {k: v for k, v in temp_data.items() if k in model_columns}
+        temp_for_validation = {k: v for k, v in temp_for_validation.items() if k in model_columns}
         temp_question = Question(**temp_for_validation)
         valid, issues = validate_question(temp_question)
         if not valid:
