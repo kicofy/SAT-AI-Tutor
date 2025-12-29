@@ -332,7 +332,8 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
         "Do NOT hallucinate. Do NOT copy figure data. Strict JSON only."
     )
     passage = item.get("passage") or ""
-    prompt_text = item.get("prompt") or ""
+    # Fallback to stem_text when prompt is absent to avoid empty normalization input
+    prompt_text = item.get("prompt") or item.get("stem_text") or ""
     choices = item.get("choices") or item.get("options") or item.get("answer_choices") or {}
     has_figure = bool(item.get("has_figure"))
     skill_tags = item.get("skill_tags") or []
