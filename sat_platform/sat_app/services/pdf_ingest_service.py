@@ -307,6 +307,7 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
     # Validate
     try:
         normalized.pop("_ai_explanations", None)
+        normalized.pop("difficulty_assessment", None)
         temp_data = question_schema.load(normalized)
         # Avoid assigning plain dict into SA relationship
         temp_data.pop("passage", None)
@@ -396,6 +397,30 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
     data["choices"] = norm_choices if norm_choices else None
     data["question_type"] = data.get("question_type") or ("choice" if norm_choices else "fill")
     data["section"] = _coerce_section(data.get("section"))
+
+    # Preserve page/index so each question points to the correct PDF page
+    page_val = item.get("page") or item.get("page_index")
+    if page_val is not None:
+        data["page"] = str(page_val)
+        try:
+            data["source_page"] = int(page_val)
+        except (TypeError, ValueError):
+            pass
+
+    # Move difficulty_assessment into metadata/estimated_time; drop from payload for schema
+    difficulty_assessment = data.pop("difficulty_assessment", None)
+    if difficulty_assessment:
+        meta = data.get("metadata") or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["difficulty_assessment"] = difficulty_assessment
+        expected_time = difficulty_assessment.get("expected_time_sec") if isinstance(difficulty_assessment, dict) else None
+        if expected_time and not data.get("estimated_time_sec"):
+            try:
+                data["estimated_time_sec"] = int(expected_time)
+            except (TypeError, ValueError):
+                pass
+        data["metadata"] = meta
 
     if data["question_type"] == "fill":
         answer_schema = data.get("answer_schema") or {}
