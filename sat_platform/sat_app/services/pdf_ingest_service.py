@@ -300,6 +300,9 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
         # Drop any transient fields not in schema
         normalized.pop("_ai_explanations", None)
         temp_data = question_schema.load(normalized)
+        # The schema may emit a nested passage dict; drop it to avoid assigning a
+        # plain dict into the SQLAlchemy relationship during validation.
+        temp_data.pop("passage", None)
         temp_question = Question(**temp_data)
         valid, issues = validate_question(temp_question)
         if not valid:
