@@ -19,6 +19,7 @@ import requests
 from flask import current_app
 
 from ..schemas.question_schema import QuestionCreateSchema
+from ..models import Question
 from .openai_log import log_event
 from .skill_taxonomy import canonicalize_tags, iter_skill_tags
 from .validation_service import validate_question, record_issues
@@ -296,15 +297,16 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
     try:
         # Drop any transient fields not in schema
         normalized.pop("_ai_explanations", None)
-        temp = question_schema.load(normalized)
-        valid, issues = validate_question(temp)
+        temp_data = question_schema.load(normalized)
+        temp_question = Question(**temp_data)
+        valid, issues = validate_question(temp_question)
         if not valid:
-            record_issues(temp, issues)
+            record_issues(temp_question, issues)
             return None
     except Exception as exc:
         current_app.logger.warning("Validation/load failed: %s", exc)
         return None
-    return normalized
+    return temp_data
 
 
 def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
