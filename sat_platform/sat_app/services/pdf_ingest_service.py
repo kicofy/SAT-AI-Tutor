@@ -8,6 +8,7 @@ import io
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Literal
@@ -73,6 +74,8 @@ def ingest_pdf_document(
     *,
     start_page: int = 1,
     end_page: int | None = None,
+    base_pages_completed: int = 0,
+    base_questions: int = 0,
 ) -> List[dict]:
     """
     Sequential pipeline:
@@ -88,6 +91,8 @@ def ingest_pdf_document(
 
     pages = _extract_pages_seq(path, start_page=start_page, end_page=end_page, progress_cb=progress_cb)
     coarse_items: List[dict] = []
+    if progress_cb:
+        progress_cb(base_pages_completed, len(pages), base_questions, "Starting PDF ingestion")
     for p in pages:
         idx = p["page_index"]
         coarse = _extract_coarse_questions(p, job_id=job_id)
@@ -96,7 +101,12 @@ def ingest_pdf_document(
             it["page_image_b64"] = p.get("page_image_b64")
             coarse_items.append(it)
         if progress_cb:
-            progress_cb(idx, len(pages), len(coarse_items), f"Coarse total: {len(coarse_items)} after page {idx}")
+            progress_cb(
+                idx,
+                len(pages),
+                base_questions + len(coarse_items),
+                f"Coarse total: {len(coarse_items)} after page {idx}",
+            )
 
     enriched: List[dict] = []
     total = len(coarse_items)
@@ -109,7 +119,12 @@ def ingest_pdf_document(
             if question_cb:
                 question_cb(eq)
         if progress_cb:
-            progress_cb(item.get("page_index", 0), len(pages), len(enriched), f"Normalized {i}/{total}")
+            progress_cb(
+                item.get("page_index", 0),
+                len(pages),
+                base_questions + len(enriched),
+                f"Normalized {i}/{total}",
+            )
     return enriched
 
 
