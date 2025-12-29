@@ -1,6 +1,4 @@
 
-"""Two-stage PDF ingest (sequential): page extraction -> per-question enrichment (normalize/solve/explain)."""
-
 from __future__ import annotations
 
 import base64
@@ -9,6 +7,13 @@ import json
 import threading
 import time
 from collections import defaultdict, deque
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeout,
+    CancelledError,
+    wait,
+    FIRST_COMPLETED,
+)
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Literal
 
@@ -19,26 +24,33 @@ from flask import current_app
 from ..schemas.question_schema import QuestionCreateSchema
 from .openai_log import log_event
 from .skill_taxonomy import canonicalize_tags, iter_skill_tags
+from .difficulty_service import difficulty_prompt_block
 from .validation_service import validate_question, record_issues
 from . import ai_explainer
 from . import question_explanation_service
 
+question_schema = QuestionCreateSchema()
+SKILL_TAG_PROMPT = ", ".join(iter_skill_tags())
 ProgressCallback = Callable[[int, int, int, Optional[str]], None]
+
 AttemptHook = Callable[
     [Literal["start", "retry", "success", "heartbeat"], int, int, float, Optional[Exception]],
     None,
 ]
 
-question_schema = QuestionCreateSchema()
-SKILL_TAG_PROMPT = ", ".join(iter_skill_tags())
-
-# ---------------- Rate limiting (best-effort, client-side) ----------------
+# --- Client-side rate limiter to avoid burst 429s ---
 _rate_lock = threading.Lock()
 _rate_window_minute: dict[str, deque] = defaultdict(deque)
 _rate_window_second: dict[str, deque] = defaultdict(deque)
 
 
 def _enforce_rate_limit(model: str) -> None:
+    """
+    Best-effort throttle before calling OpenAI.
+    Configurable limits:
+      AI_RESPONSES_MAX_RPM (default 40)
+      AI_RESPONSES_MAX_RPS (default 3)
+    """
     app = current_app
     max_rpm = int(app.config.get("AI_RESPONSES_MAX_RPM", 40))
     max_rps = int(app.config.get("AI_RESPONSES_MAX_RPS", 3))
@@ -63,461 +75,31 @@ def _enforce_rate_limit(model: str) -> None:
         _rate_window_second[model].append(now2)
 
 
-# ---------------- Public entry ----------------
-def ingest_pdf_document(
-    source_path: str | Path,
-    progress_cb: Optional[ProgressCallback] = None,
-    question_cb: Optional[Callable[[dict], None]] = None,
-    job_id: int | None = None,
-    cancel_event: Optional[threading.Event] = None,
-    *,
-    start_page: int = 1,
-    end_page: int | None = None,
-) -> List[dict]:
-    """
-    Sequential pipeline:
-      1) For each page (start_page..end_page): extract coarse questions via vision/text prompt.
-      2) For each coarse question (in order): normalize -> solve (if needed) -> explain (if eligible).
-    Guarantees: only one OpenAI call in flight at any time.
-    """
-    path = Path(source_path)
-    if not path.exists():
-        raise FileNotFoundError(path)
-    if cancel_event and cancel_event.is_set():
-        return []
-
-    pages = _extract_pages_seq(path, start_page=start_page, end_page=end_page, progress_cb=progress_cb)
-    coarse_items: List[dict] = []
-    for p in pages:
-        idx = p["page_index"]
-        coarse = _extract_coarse_questions(p, job_id=job_id)
-        for it in coarse:
-            it["page_index"] = idx
-            it["page_image_b64"] = p.get("page_image_b64")
-            coarse_items.append(it)
-        if progress_cb:
-            progress_cb(idx, len(pages), len(coarse_items), f"Coarse total: {len(coarse_items)} after page {idx}")
-
-    enriched: List[dict] = []
-    total = len(coarse_items)
-    for i, item in enumerate(coarse_items, start=1):
-        if cancel_event and cancel_event.is_set():
-            break
-        eq = _enrich_item(item, job_id=job_id)
-        if eq:
-            enriched.append(eq)
-            if question_cb:
-                question_cb(eq)
-        if progress_cb:
-            progress_cb(item.get("page_index", 0), len(pages), len(enriched), f"Normalized {i}/{total}")
-    return enriched
-
-
-# ---------------- Stage 1: Page extraction ----------------
-def _extract_pages_seq(
-    path: Path,
-    *,
-    start_page: int = 1,
-    end_page: int | None = None,
-    progress_cb: Optional[ProgressCallback] = None,
-) -> List[dict]:
-    app = current_app
-    resolution = app.config.get("PDF_INGEST_RESOLUTION", 220)
-    max_pages = app.config.get("PDF_INGEST_MAX_PAGES", 200)
-    out: List[dict] = []
-    with pdfplumber.open(path) as pdf:
-        total = len(pdf.pages)
-        if end_page is None:
-            end_page = total
-        for idx, page in enumerate(pdf.pages, start=1):
-            if idx < start_page or idx > end_page or idx > max_pages:
-                continue
-            text = ""
+def _parse_numeric_str(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if "/" in text:
+        parts = text.split("/")
+        if len(parts) == 2:
             try:
-                text = (page.extract_text() or "").strip()
-            except Exception as exc:
-                app.logger.warning("extract_text failed on page %s: %s", idx, exc)
-            img = _page_to_base64_safe(page, resolution)
-            out.append({"page_index": idx, "text": text, "page_image_b64": img})
-            if progress_cb:
-                progress_cb(idx, end_page, len(out), f"Rendered page {idx}/{end_page}")
-    return out
-
-
-def _page_to_base64_safe(page, resolution: int) -> str | None:
-    try:
-        page_image = page.to_image(resolution=resolution).original.convert("RGB")
-        buf = io.BytesIO()
-        page_image.save(buf, format="PNG")
-        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{encoded}"
-    except Exception as exc:
-        current_app.logger.warning("Page render failed: %s", exc)
-        return None
-
-
-def _extract_coarse_questions(page: dict, *, job_id: int | None) -> List[dict]:
-    page_index = page.get("page_index")
-    text = page.get("text") or ""
-    image_b64 = page.get("page_image_b64")
-
-    schema = {
-        "type": "object",
-        "properties": {
-            "questions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question_number": {"type": "string"},
-                        "section": {"type": "string"},
-                        "passage": {"type": "string"},
-                        "prompt": {"type": "string"},
-                        "has_figure": {"type": "boolean"},
-                        "choices": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {"label": {"type": "string"}, "text": {"type": "string"}},
-                                "required": ["label", "text"],
-                            },
-                        },
-                        "highlights": {
-                            "type": "array",
-                            "items": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
-                            "default": [],
-                        },
-                    },
-                    "required": ["question_number", "prompt", "choices", "has_figure"],
-                },
-            }
-        },
-        "required": ["questions"],
-    }
-    schema_hint = json.dumps(schema, ensure_ascii=False, indent=2)
-    system_prompt = (
-        "You are an SAT content extraction assistant. Emit STRICT JSON per the schema. Rules:\n"
-        "- passage: supporting narrative only; do NOT copy figure/table text.\n"
-        "- prompt: interrogative sentence(s).\n"
-        "- choices: all options with labels.\n"
-        "- has_figure: true if chart/table/graph/image referenced; do NOT copy figure text.\n"
-        f"- skill_tags: up to two from: {SKILL_TAG_PROMPT}; else [].\n"
-        "- highlights: underlined snippets as {{\"text\": \"...\"}} from passage.\n"
-        "If no questions: {\"questions\": []}. No commentary."
-    )
-    user_prompt = f"You are examining page {page_index} of an SAT prep PDF. Return JSON matching:\n{schema_hint}\nStrict JSON only."
-
-    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
-    if text:
-        user_content.append({"type": "input_text", "text": text[:12000]})
-    if image_b64:
-        user_content.append({"type": "input_image", "image_url": image_b64})
-
-    payload = {
-        "model": current_app.config.get("AI_PDF_VISION_MODEL", "gpt-4.1"),
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.1,
-    }
-    raw = _call_responses_api(payload, purpose=f"page {page_index} extraction", attempt_hook=None, job_id=job_id)
-    try:
-        data = json.loads(raw)
-    except Exception:
-        current_app.logger.warning("Invalid JSON on page %s: %s", page_index, raw[:200])
-        return []
-    questions = data.get("questions") if isinstance(data, dict) else None
-    out: List[dict] = []
-    if isinstance(questions, list):
-        for q in questions:
-            if not isinstance(q, dict):
-                continue
-            item = dict(q)
-            item["source_question_number"] = _extract_question_number(q)
-            item["has_figure"] = bool(q.get("has_figure"))
-            item["highlights"] = _sanitize_highlights(q.get("highlights"))
-            out.append(item)
-    return out
-
-
-# ---------------- Stage 2: per-item enrichment ----------------
-def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
-    normalized = _normalize_question_item(item, job_id=job_id)
-    if not normalized:
-        return None
-
-    # Solve if missing
-    correct = normalized.get("correct_answer") or {}
-    if not correct.get("value"):
-        solved = _solve_choice_answer(normalized, item, job_id=job_id)
-        if solved and solved.get("answer_value"):
-            normalized.setdefault("correct_answer", {})["value"] = solved["answer_value"]
-            if solved.get("solution"):
-                meta = normalized.get("metadata") or {}
-                meta["ai_solution"] = solved["solution"]
-                normalized["metadata"] = meta
-
-    # Explain (skip when figures to avoid hallucinated coords)
-    has_fig = bool(normalized.get("has_figure"))
-    choice_figs = normalized.get("choice_figure_keys") or []
-    if not has_fig and not choice_figs:
-        try:
-            expl = question_explanation_service.generate_explanations_for_payload(normalized)
-            if expl:
-                normalized["_ai_explanations"] = expl
-        except ai_explainer.AiExplainerError:
-            pass
-        except Exception:
-            current_app.logger.exception("Explanation generation failed")
-
-    # Validate
-    try:
-        temp = question_schema.load(normalized)
-        valid, issues = validate_question(temp)
-        if not valid:
-            record_issues(temp, issues)
-            return None
-    except Exception as exc:
-        current_app.logger.warning("Validation/load failed: %s", exc)
-        return None
-    return normalized
-
-
-def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
-    system_prompt = (
-        "You are an SAT content normalizer. Output a single JSON object with fields:\n"
-        "- section: 'RW' or 'Math'\n"
-        "- question_type: 'choice' or 'fill'\n"
-        "- stem_text, passage ({\"content_text\":...} or null)\n"
-        "- choices (object, e.g., {\"A\":\"...\"}) for choice questions\n"
-        "- correct_answer: {\"value\": ...}\n"
-        "- answer_schema for fill: acceptable (<=5 chars, grid-in rules), type, allow_fraction, allow_pi, strip_spaces\n"
-        "- skill_tags: up to two from allowed list; else []\n"
-        "- has_figure, choice_figure_keys\n"
-        "- metadata: include source_question_number if available\n"
-        "Do NOT hallucinate. Do NOT copy figure data. Strict JSON only."
-    )
-    passage = item.get("passage") or ""
-    prompt_text = item.get("prompt") or ""
-    choices = item.get("choices") or item.get("options") or item.get("answer_choices") or {}
-    has_figure = bool(item.get("has_figure"))
-    skill_tags = item.get("skill_tags") or []
-    section = item.get("section") or ""
-    source_qnum = _extract_question_number(item)
-
-    user_lines = [
-        f"Section: {section}",
-        f"Passage: {passage or '(none)'}",
-        f"Prompt: {prompt_text}",
-        f"Choices: {json.dumps(choices, ensure_ascii=False)}",
-        f"Has figure: {has_figure}",
-        f"Skill tags (raw): {skill_tags}",
-        f"Source question number: {source_qnum}",
-    ]
-    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": "\n".join(user_lines)}]
-    if item.get("page_image_b64") and (has_figure or item.get("choice_figure_keys")):
-        user_content.append({"type": "input_image", "image_url": item.get("page_image_b64")})
-
-    payload = {
-        "model": current_app.config.get("AI_PDF_NORMALIZE_MODEL", "gpt-4.1"),
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.1,
-    }
-    raw = _call_responses_api(payload, purpose="question normalization", attempt_hook=None, job_id=job_id)
-    try:
-        data = json.loads(raw)
-    except Exception:
-        current_app.logger.warning("Normalize JSON parse failed: %s", raw[:200])
-        return None
-
-    norm_choices = _normalize_choices(data.get("choices"))
-    data["choices"] = norm_choices if norm_choices else None
-    data["question_type"] = data.get("question_type") or ("choice" if norm_choices else "fill")
-    data["section"] = _coerce_section(data.get("section"))
-
-    if data["question_type"] == "fill":
-        answer_schema = data.get("answer_schema") or {}
-        if not isinstance(answer_schema, dict):
-            answer_schema = {}
-        correct_val = (data.get("correct_answer") or {}).get("value")
-        if correct_val and not answer_schema.get("acceptable"):
-            answer_schema["acceptable"] = [str(correct_val).strip()]
-        answer_schema.setdefault("type", "numeric")
-        answer_schema.setdefault("allow_fraction", True)
-        answer_schema.setdefault("allow_pi", True)
-        answer_schema.setdefault("strip_spaces", True)
-        data["answer_schema"] = answer_schema
-
-    data["passage"] = _normalize_passage(data.get("passage"))
-    data["skill_tags"] = _sanitize_skill_tags(data.get("skill_tags"))
-    data["has_figure"] = bool(data.get("has_figure") or data.get("choice_figure_keys"))
-
-    if source_qnum is not None:
-        meta = data.get("metadata") or {}
-        if not isinstance(meta, dict):
-            meta = {}
-        meta["source_question_number"] = source_qnum
-        data["metadata"] = meta
-
-    return data
-
-
-def _solve_choice_answer(normalized: dict, raw_item: dict, *, job_id: int | None) -> dict | None:
-    choices = normalized.get("choices") or {}
-    if not choices:
-        return None
-    system_prompt = (
-        "You are an SAT solving assistant. Determine the single best answer choice.\n"
-        'Return JSON: {"answer_value": "A", "solution": "step-by-step reasoning"}.\n'
-        "answer_value must be one of the provided choice letters."
-    )
-    passage = normalized.get("passage") or {}
-    passage_text = passage.get("content_text") if isinstance(passage, dict) else ""
-    stem_text = normalized.get("stem_text") or raw_item.get("prompt") or ""
-    section = normalized.get("section") or raw_item.get("section") or ""
-    user_lines = [
-        f"Section: {section}",
-        f"Passage: {passage_text or '(no passage)'}",
-        f"Question: {stem_text}",
-        f"Choices: {json.dumps(choices, ensure_ascii=False)}",
-    ]
-    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": "\n".join(user_lines)}]
-    if raw_item.get("page_image_b64") and (normalized.get("has_figure") or normalized.get("choice_figure_keys")):
-        user_content.append({"type": "input_image", "image_url": raw_item.get("page_image_b64")})
-
-    payload = {
-        "model": current_app.config.get("AI_PDF_SOLVER_MODEL", current_app.config.get("AI_PDF_NORMALIZE_MODEL", "gpt-4.1")),
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.1,
-    }
-    try:
-        raw = _call_responses_api(payload, purpose="question solving", attempt_hook=None, job_id=job_id)
-        data = json.loads(raw)
-        ans = data.get("answer_value")
-        if isinstance(ans, str):
-            ans = ans.strip().upper()
-        if ans not in choices:
-            current_app.logger.warning("Solver answer not in choices: %s", ans)
-            return None
-        return {"answer_value": ans, "solution": data.get("solution")}
-    except Exception as exc:
-        current_app.logger.warning("Solver failed: %s", exc)
-        return None
-
-
-# ---------------- OpenAI call wrapper ----------------
-def _call_responses_api(
-    payload: dict,
-    *,
-    purpose: str,
-    attempt_hook: Optional[AttemptHook] = None,
-    job_id: Optional[int] = None,
-) -> str:
-    app = current_app
-    api_key = app.config.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY / AI_API_KEY must be configured for PDF ingestion.")
-    base_url = app.config.get("AI_API_BASE", "https://api.openai.com/v1").rstrip("/")
-    timeout = app.config.get("AI_TIMEOUT_SECONDS", 120)
-    connect_timeout = app.config.get("AI_CONNECT_TIMEOUT_SEC", 15)
-    read_timeout = app.config.get("AI_READ_TIMEOUT_SEC", timeout)
-    max_attempts = max(1, int(app.config.get("AI_API_MAX_RETRIES", 3)))
-    backoff = float(app.config.get("AI_API_RETRY_BACKOFF", 2.0))
-    model_name = payload.get("model")
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    attempt = 0
-    watchdog_timeout = connect_timeout + read_timeout + 5
-    heartbeat_interval = max(5.0, min(15.0, read_timeout / 4))
-
-    while True:
-        attempt += 1
-        if attempt_hook:
-            attempt_hook("start", attempt, max_attempts, 0.0, None)
-        start_time = time.perf_counter()
-
-        # Rate limit before sending
-        if model_name:
-            _enforce_rate_limit(model_name)
-
-        try:
-            future = requests.post(
-                f"{base_url}/responses",
-                headers=headers,
-                json=payload,
-                timeout=(connect_timeout, read_timeout),
-            )
-            response = future
-            response.raise_for_status()
-            data = response.json()
-            log_event(
-                "openai_success",
-                {
-                    "job_id": job_id,
-                    "purpose": purpose,
-                    "status_code": response.status_code,
-                    "attempt": attempt,
-                    "max_attempts": max_attempts,
-                    "duration_ms": int((time.perf_counter() - start_time) * 1000),
-                    "model": model_name,
-                },
-            )
-            if attempt_hook:
-                attempt_hook("success", attempt, max_attempts, 0.0, None)
-            break
-        except requests.RequestException as exc:
-            if attempt_hook:
-                attempt_hook("retry", attempt, max_attempts, backoff * attempt, exc)
-            if attempt >= max_attempts:
-                log_event(
-                    "openai_failure",
-                    {
-                        "job_id": job_id,
-                        "purpose": purpose,
-                        "attempt": attempt,
-                        "max_attempts": max_attempts,
-                        "duration_ms": int((time.perf_counter() - start_time) * 1000),
-                        "model": model_name,
-                        "error": str(exc),
-                    },
-                )
-                raise
-            sleep_for = backoff * attempt
-            try:
-                retry_after = exc.response.headers.get("Retry-After") if exc.response else None
-                if retry_after:
-                    sleep_for = max(sleep_for, float(retry_after))
+                return float(parts[0]) / float(parts[1])
             except Exception:
-                pass
-            current_app.logger.warning(
-                "PDF ingest: %s attempt %s/%s failed (%s). Retrying in %.1fs",
-                purpose,
-                attempt,
-                max_attempts,
-                exc,
-                sleep_for,
-            )
-            time.sleep(sleep_for)
+                return None
+    try:
+        return float(text)
+    except Exception:
+        return None
 
-    texts: List[str] = []
-    for chunk in data.get("output", []):
-        for content in chunk.get("content", []):
-            if content.get("type") in {"output_text", "text"}:
-                texts.append(content.get("text", ""))
-    if not texts and data.get("output_text"):
-        texts.extend(data["output_text"])
-    return "".join(texts).strip()
-
-
-# ---------------- Helpers ----------------
 def _extract_question_number(payload: Dict[str, Any]) -> str | int | None:
-    for key in ("question_number", "original_question_number", "source_question_number", "question_index"):
+    for key in (
+        "question_number",
+        "original_question_number",
+        "source_question_number",
+        "question_index",
+    ):
         value = payload.get(key)
         if value is None:
             continue
@@ -527,55 +109,255 @@ def _extract_question_number(payload: Dict[str, Any]) -> str | int | None:
     return None
 
 
-def _normalize_choices(raw_choices: Any) -> Dict[str, str]:
-    if isinstance(raw_choices, dict):
-        return {str(k).strip().upper(): v if isinstance(v, str) else str(v) for k, v in raw_choices.items() if str(k).strip()}
-    if isinstance(raw_choices, list):
-        out: Dict[str, str] = {}
-        for idx, c in enumerate(raw_choices):
-            if not isinstance(c, dict):
-                continue
-            label = (c.get("label") or "").strip().upper() or chr(ord("A") + idx)
-            text = c.get("text") or c.get("value") or ""
-            out[label] = text
-        return out
-    return {}
+def ingest_pdf_document(
+    source_path: str | Path,
+    progress_cb: Optional[ProgressCallback] = None,
+    question_cb: Optional[Callable[[dict], None]] = None,
+    job_id: int | None = None,
+    cancel_event: Optional[threading.Event] = None,
+    *,
+    start_page: int = 1,
+    base_pages_completed: int = 0,
+    base_questions: int = 0,
+) -> List[dict]:
+    """Parse a PDF file and return normalized question payloads."""
+    path = Path(source_path)
+    if not path.exists():
+        raise FileNotFoundError(path)
 
-
-def _normalize_passage(raw_value: Any) -> dict | None:
-    if isinstance(raw_value, dict):
-        return raw_value if raw_value.get("content_text") else None
-    if isinstance(raw_value, str):
-        t = raw_value.strip()
-        return {"content_text": t, "metadata": {"source": "pdf_ingest"}} if t else None
-    return None
-
-
-def _sanitize_skill_tags(raw_tags: Any) -> List[str]:
-    if isinstance(raw_tags, list):
-        return canonicalize_tags(raw_tags, limit=2)
-    return []
-
-
-def _sanitize_highlights(raw_highlights: Any) -> List[dict]:
-    if not isinstance(raw_highlights, list):
+    if cancel_event and cancel_event.is_set():
         return []
-    out: List[dict] = []
-    for h in raw_highlights:
-        if isinstance(h, dict) and h.get("text"):
-            out.append({"text": str(h["text"])})
-    return out
+    pages = _extract_pages(path)
+    normalized: List[dict] = []
+    total_pages = len(pages)
+    app = current_app._get_current_object()
+    # Force single-threaded ingest by default to avoid burst calls; override only if explicitly set.
+    worker_limit = max(1, int(current_app.config.get("PDF_INGEST_MAX_WORKERS", 1)))
+    max_workers = 1
+    if progress_cb:
+        progress_cb(
+            base_pages_completed,
+            total_pages,
+            base_questions,
+            f"Starting PDF ingestion with {max_workers} worker(s)",
+        )
 
+    max_wait = current_app.config.get("AI_READ_TIMEOUT_SEC", 60)
 
-def _coerce_section(raw_value: Any) -> str:
-    if not raw_value:
-        return "RW"
-    lowered = str(raw_value).strip().lower()
-    if lowered in {"rw", "reading", "reading & writing", "reading/writing", "english", "verbal"}:
-        return "RW"
-    if "math" in lowered:
-        return "Math"
-    return "RW"
+    def _make_attempt_hook(
+        stage: str,
+        page_idx: int,
+        total_pages: int,
+        count_getter: Callable[[], int],
+        job_id: int | None,
+        progress_callback: Optional[ProgressCallback] = progress_cb,
+    ):
+        def _hook(
+            state: Literal["start", "retry", "success", "heartbeat"],
+            attempt: int,
+            max_attempts: int,
+            wait_seconds: float,
+            error: Exception | None,
+        ) -> None:
+            normalized_count = count_getter()
+            message: str
+            if state == "start":
+                message = (
+                    f"{stage} (attempt {attempt}/{max_attempts}) — this step can take up to {max_wait}s."
+                )
+            elif state == "success":
+                message = f"{stage} completed (attempt {attempt}/{max_attempts})."
+            elif state == "heartbeat":
+                elapsed = int(max(wait_seconds, 0))
+                message = f"{stage} still running (elapsed {elapsed}s)..."
+            else:
+                message = (
+                    f"{stage} attempt {attempt}/{max_attempts} failed"
+                    + (f": {error}" if error else "")
+                    + (f"; retrying in {wait_seconds:.1f}s" if wait_seconds else "")
+                )
+            if progress_callback:
+                progress_callback(page_idx, total_pages, normalized_count, message)
+            kind = {
+                "start": "openai_attempt",
+                "retry": "openai_retry",
+                "success": "openai_stage_complete",
+                "heartbeat": "openai_wait",
+            }.get(state, "openai_event")
+            log_event(
+                kind,
+                {
+                    "job_id": job_id,
+                    "stage": stage,
+                    "state": state,
+                    "page": page_idx,
+                    "total_pages": total_pages,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "normalized_count": normalized_count,
+                    "wait_seconds": wait_seconds,
+                    "error": str(error) if error else None,
+                    "message": message,
+                },
+            )
+
+        return _hook
+
+    def _process_page(page_index: int, page_data: Dict[str, Any]):
+        if cancel_event and cancel_event.is_set():
+            return page_index, [], "Cancelled"
+        with app.app_context():
+            local_normalized: List[dict] = []
+            message: str | None = None
+            try:
+                questions = _request_page_questions(
+                    page_data,
+                    page_index=page_index,
+                    attempt_hook=_make_attempt_hook(
+                        f"Extracting page {page_index}/{total_pages}",
+                        page_index,
+                        total_pages,
+                        lambda: len(local_normalized),
+                        job_id,
+                        progress_callback=None,
+                    ),
+                    job_id=job_id,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                current_app.logger.warning(
+                    "PDF ingest: failed to parse page %s, skipping. %s", page_index, exc
+                )
+                message = f"Skipped page {page_index}/{total_pages}: {exc}"
+                return page_index, local_normalized, message
+            if not questions:
+                message = f"Page {page_index}/{total_pages}: no questions found"
+                return page_index, local_normalized, message
+            for raw_question in questions:
+                if cancel_event and cancel_event.is_set():
+                    return page_index, local_normalized, "Cancelled"
+                try:
+                    payload = _normalize_question(
+                        raw_question,
+                        page_image_b64=page_data.get("image_b64"),
+                        attempt_hook=_make_attempt_hook(
+                            f"Normalizing question from page {page_index}/{total_pages}",
+                            page_index,
+                            total_pages,
+                            lambda: len(local_normalized),
+                            job_id,
+                            progress_callback=None,
+                        ),
+                        job_id=job_id,
+                    )
+                    local_normalized.append(payload)
+                except Exception as exc:  # pragma: no cover - guarded by unit tests
+                    current_app.logger.warning(
+                        "PDF ingest: failed to normalize question on page %s: %s",
+                        page_index,
+                        exc,
+                    )
+            if not message:
+                message = (
+                    f"Normalized {len(local_normalized)} question(s) from page "
+                    f"{page_index}/{total_pages}"
+                )
+            return page_index, local_normalized, message
+
+    page_timeout = max(
+        90,
+        int(
+            current_app.config.get(
+                "PDF_INGEST_PAGE_TIMEOUT_SEC",
+                (current_app.config.get("AI_CONNECT_TIMEOUT_SEC", 15) + current_app.config.get("AI_READ_TIMEOUT_SEC", 120)) * current_app.config.get("AI_API_MAX_RETRIES", 3)
+                + 30,
+            )
+        ),
+    )
+    heartbeat_interval = 5.0
+    futures = []
+    future_started_at: dict = {}
+    future_page: dict = {}
+    completed_pages = base_pages_completed
+    normalized_count = base_questions
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for idx, page in enumerate(pages, start=1):
+            if idx < start_page:
+                continue
+            if cancel_event and cancel_event.is_set():
+                break
+            future = executor.submit(_process_page, idx, page)
+            futures.append(future)
+            future_started_at[future] = time.perf_counter()
+            future_page[future] = idx
+
+        while futures:
+            done, pending = wait(futures, timeout=heartbeat_interval, return_when=FIRST_COMPLETED)
+            now = time.perf_counter()
+
+            # Cancel and report any pages that exceeded the watchdog timeout
+            for future in list(pending):
+                started_at = future_started_at.get(future, now)
+                elapsed = now - started_at
+                if elapsed >= page_timeout:
+                    page_idx = future_page.get(future)
+                    future.cancel()
+                    futures.remove(future)
+                    future_started_at.pop(future, None)
+                    future_page.pop(future, None)
+                    if progress_cb:
+                        progress_cb(
+                            completed_pages,
+                            total_pages,
+                            normalized_count,
+                            f"Page {page_idx}/{total_pages} timed out after {int(elapsed)}s; skipped",
+                        )
+                    current_app.logger.warning(
+                        "PDF ingest: page %s timed out after %.1fs; cancelled", page_idx, elapsed
+                    )
+
+            if not done:
+                continue
+
+            for future in done:
+                futures.remove(future)
+                page_index = future_page.pop(future, None)
+                future_started_at.pop(future, None)
+                if cancel_event and cancel_event.is_set():
+                    break
+                try:
+                    page_result = future.result()
+                    if page_result is None:
+                        continue
+                    page_index, payloads, message = page_result
+                except CancelledError:
+                    continue
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    current_app.logger.exception("PDF ingest: worker failed", exc_info=exc)
+                    if progress_cb:
+                        progress_cb(
+                            completed_pages,
+                            total_pages,
+                            len(normalized),
+                            f"Worker error on page {page_index}: {exc}",
+                        )
+                    continue
+
+                completed_pages += 1
+                for payload in payloads:
+                    normalized.append(payload)
+                    normalized_count += 1
+                    # Pre-generate explanations for all questions (choice/fill, with or without figures)
+                    _attach_precomputed_explanations(payload)
+                    if question_cb:
+                        question_cb(payload)
+                if progress_cb:
+                    progress_cb(
+                        completed_pages,
+                        total_pages,
+                        normalized_count,
+                        message or f"Finished page {page_index}/{total_pages}",
+                    )
+    return normalized
 
 
 def _extract_pages(path: Path) -> List[Dict[str, Any]]:
@@ -1134,6 +916,9 @@ def _call_responses_api(
         if attempt_hook:
             attempt_hook("start", attempt, max_attempts, 0.0, None)
         start_time = time.perf_counter()
+        # Throttle before sending to avoid bursts
+        if model_name:
+            _enforce_rate_limit(model_name)
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
@@ -1216,6 +1001,13 @@ def _call_responses_api(
                 )
                 raise
             sleep_for = backoff * attempt
+            # Honor Retry-After header when present (429/503)
+            try:
+                retry_after = exc.response.headers.get("Retry-After") if exc.response else None
+                if retry_after:
+                    sleep_for = max(sleep_for, float(retry_after))
+            except Exception:
+                pass
             app.logger.warning(
                 "PDF ingest: %s attempt %s/%s failed (%s). Retrying in %.1fs",
                 purpose,

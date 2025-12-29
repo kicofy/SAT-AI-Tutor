@@ -1,13 +1,15 @@
 // Prefer current host; if running dev on port 3000, map to backend 5080 on same host.
 function resolveDefaultApiBase(): string {
+  // Server-side渲染或未设置环境变量时的安全默认值：本机 5080
   if (typeof window === "undefined") {
-    // Server-side/default fallback for LAN deployment
-    return "http://192.168.50.235:5080";
+    return "http://127.0.0.1:5080";
   }
   const { protocol, hostname, port } = window.location;
+  // 常见本地前端端口 3000/3001，对应后端 5080
   if (port === "3000" || port === "3001") {
     return `${protocol}//${hostname}:5080`;
   }
+  // 同域部署则直接用当前来源
   return window.location.origin;
 }
 
