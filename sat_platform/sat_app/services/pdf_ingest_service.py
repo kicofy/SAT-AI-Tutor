@@ -1327,142 +1327,20 @@ AttemptHook = Callable[
 ]
 
 
-def _call_responses_api(
+def _call_responses_api_legacy(
     payload: dict,
     *,
     purpose: str,
     attempt_hook: Optional[AttemptHook] = None,
     job_id: Optional[int] = None,
+    ctx: Optional[dict] = None,
 ) -> str:
-    app = current_app
-    api_key = app.config.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY / AI_API_KEY must be configured for PDF ingestion.")
-    base_url = app.config.get("AI_API_BASE", "https://api.openai.com/v1").rstrip("/")
-    timeout = app.config.get("AI_TIMEOUT_SECONDS", 120)
-    connect_timeout = app.config.get("AI_CONNECT_TIMEOUT_SEC", 15)
-    read_timeout = app.config.get("AI_READ_TIMEOUT_SEC", timeout)
-    max_attempts = max(1, int(app.config.get("AI_API_MAX_RETRIES", 3)))
-    backoff = float(app.config.get("AI_API_RETRY_BACKOFF", 2.0))
-    model_name = payload.get("model")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    attempt = 0
-    watchdog_timeout = connect_timeout + read_timeout + 5
-    heartbeat_interval = max(5.0, min(15.0, read_timeout / 4))
-    while True:
-        attempt += 1
-        if attempt_hook:
-            attempt_hook("start", attempt, max_attempts, 0.0, None)
-        start_time = time.perf_counter()
-        try:
-            # Avoid non-daemon threads from ThreadPoolExecutor that can hang interpreter shutdown.
-            response_box: dict[str, requests.Response] = {}
-            exc_box: dict[str, Exception] = {}
-
-            def _do_request():
-                try:
-                    resp = requests.post(
-                        f"{base_url}/responses",
-                        headers=headers,
-                        json=payload,
-                        timeout=(connect_timeout, read_timeout),
-                    )
-                    response_box["resp"] = resp
-                except Exception as req_exc:  # pragma: no cover - defensive
-                    exc_box["exc"] = req_exc
-
-            worker = threading.Thread(target=_do_request, daemon=True)
-            worker.start()
-            elapsed = 0.0
-            while worker.is_alive():
-                remaining = max(0.5, watchdog_timeout - elapsed)
-                if remaining <= 0:
-                    break
-                slice_timeout = min(heartbeat_interval, remaining)
-                worker.join(timeout=slice_timeout)
-                elapsed += slice_timeout
-                if worker.is_alive() and attempt_hook:
-                    attempt_hook("heartbeat", attempt, max_attempts, elapsed, None)
-
-            if worker.is_alive():
-                exc = requests.Timeout(f"Client watchdog timed out after {watchdog_timeout}s")
-                log_event(
-                    "openai_timeout",
-                    {
-                        "job_id": job_id,
-                        "purpose": purpose,
-                        "attempt": attempt,
-                        "max_attempts": max_attempts,
-                        "duration_ms": int((time.perf_counter() - start_time) * 1000),
-                        "model": model_name,
-                        "error": str(exc),
-                    },
-                )
-                if attempt_hook:
-                    attempt_hook("heartbeat", attempt, max_attempts, elapsed, exc)
-                raise exc
-
-            if "exc" in exc_box:
-                raise exc_box["exc"]
-
-            response = response_box.get("resp")
-            if response is None:
-                raise requests.Timeout("Client watchdog timed out with no response object.")
-
-            response.raise_for_status()
-            data = response.json()
-            log_event(
-                "openai_success",
-                {
-                    "job_id": job_id,
-                    "purpose": purpose,
-                    "status_code": response.status_code,
-                    "attempt": attempt,
-                    "max_attempts": max_attempts,
-                    "duration_ms": int((time.perf_counter() - start_time) * 1000),
-                    "model": model_name,
-                },
-            )
-            if attempt_hook:
-                attempt_hook("success", attempt, max_attempts, 0.0, None)
-            break
-        except requests.RequestException as exc:
-            if attempt_hook:
-                attempt_hook("retry", attempt, max_attempts, backoff * attempt, exc)
-            if attempt >= max_attempts:
-                log_event(
-                    "openai_failure",
-                    {
-                        "job_id": job_id,
-                        "purpose": purpose,
-                        "attempt": attempt,
-                        "max_attempts": max_attempts,
-                        "duration_ms": int((time.perf_counter() - start_time) * 1000),
-                        "model": model_name,
-                        "error": str(exc),
-                    },
-                )
-                raise
-            sleep_for = backoff * attempt
-            app.logger.warning(
-                "PDF ingest: %s attempt %s/%s failed (%s). Retrying in %.1fs",
-                purpose,
-                attempt,
-                max_attempts,
-                exc,
-                sleep_for,
-            )
-            time.sleep(sleep_for)
-    texts: List[str] = []
-    for chunk in data.get("output", []):
-        for content in chunk.get("content", []):
-            if content.get("type") in {"output_text", "text"}:
-                texts.append(content.get("text", ""))
-    if not texts and data.get("output_text"):
-        texts.extend(data["output_text"])
-    return "".join(texts).strip()
+    return _call_responses_api(
+        payload,
+        purpose=purpose,
+        attempt_hook=attempt_hook,
+        job_id=job_id,
+        ctx=ctx,
+    )
 
 
