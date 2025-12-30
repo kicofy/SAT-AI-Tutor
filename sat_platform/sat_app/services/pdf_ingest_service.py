@@ -1293,52 +1293,60 @@ def _call_responses_api(
             attempt_hook("start", attempt, max_attempts, 0.0, None)
         start_time = time.perf_counter()
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    requests.post,
-                    f"{base_url}/responses",
-                    headers=headers,
-                    json=payload,
-                    timeout=(connect_timeout, read_timeout),
+            # Avoid non-daemon threads from ThreadPoolExecutor that can hang interpreter shutdown.
+            response_box: dict[str, requests.Response] = {}
+            exc_box: dict[str, Exception] = {}
+
+            def _do_request():
+                try:
+                    resp = requests.post(
+                        f"{base_url}/responses",
+                        headers=headers,
+                        json=payload,
+                        timeout=(connect_timeout, read_timeout),
+                    )
+                    response_box["resp"] = resp
+                except Exception as req_exc:  # pragma: no cover - defensive
+                    exc_box["exc"] = req_exc
+
+            worker = threading.Thread(target=_do_request, daemon=True)
+            worker.start()
+            elapsed = 0.0
+            while worker.is_alive():
+                remaining = max(0.5, watchdog_timeout - elapsed)
+                if remaining <= 0:
+                    break
+                slice_timeout = min(heartbeat_interval, remaining)
+                worker.join(timeout=slice_timeout)
+                elapsed += slice_timeout
+                if worker.is_alive() and attempt_hook:
+                    attempt_hook("heartbeat", attempt, max_attempts, elapsed, None)
+
+            if worker.is_alive():
+                exc = requests.Timeout(f"Client watchdog timed out after {watchdog_timeout}s")
+                log_event(
+                    "openai_timeout",
+                    {
+                        "job_id": job_id,
+                        "purpose": purpose,
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "duration_ms": int((time.perf_counter() - start_time) * 1000),
+                        "model": model_name,
+                        "error": str(exc),
+                    },
                 )
-                elapsed = 0.0
-                last_timeout_exc: FutureTimeout | None = None
-                response = None
-                while True:
-                    remaining = max(0.5, watchdog_timeout - elapsed)
-                    if remaining <= 0:
-                        break
-                    slice_timeout = min(heartbeat_interval, remaining)
-                    try:
-                        response = future.result(timeout=slice_timeout)
-                        break
-                    except FutureTimeout as timeout_exc:
-                        last_timeout_exc = timeout_exc
-                        elapsed += slice_timeout
-                        if elapsed >= watchdog_timeout:
-                            break
-                        if attempt_hook:
-                            attempt_hook("heartbeat", attempt, max_attempts, elapsed, None)
-                if response is None:
-                    future.cancel()
-                    exc = requests.Timeout(
-                        f"Client watchdog timed out after {watchdog_timeout}s"
-                    )
-                    log_event(
-                        "openai_timeout",
-                        {
-                            "job_id": job_id,
-                            "purpose": purpose,
-                            "attempt": attempt,
-                            "max_attempts": max_attempts,
-                            "duration_ms": int((time.perf_counter() - start_time) * 1000),
-                            "model": model_name,
-                            "error": str(exc),
-                        },
-                    )
-                    if attempt_hook:
-                        attempt_hook("heartbeat", attempt, max_attempts, elapsed, exc)
-                    raise exc from last_timeout_exc
+                if attempt_hook:
+                    attempt_hook("heartbeat", attempt, max_attempts, elapsed, exc)
+                raise exc
+
+            if "exc" in exc_box:
+                raise exc_box["exc"]
+
+            response = response_box.get("resp")
+            if response is None:
+                raise requests.Timeout("Client watchdog timed out with no response object.")
+
             response.raise_for_status()
             data = response.json()
             log_event(
