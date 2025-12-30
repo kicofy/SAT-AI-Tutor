@@ -1876,7 +1876,8 @@ def publish_draft(draft_id: int):
             abort(404)
         if post_publish_langs:
             _spawn_background_explanations(question.id, post_publish_langs)
-        job_event_broker.publish({"type": "draft_removed", "payload": {"id": draft_id}})
+        # Include job_id so frontend can scope the removal without reloading all jobs
+        job_event_broker.publish({"type": "draft_removed", "payload": {"id": draft_id, "job_id": draft.job_id}})
         return jsonify({"question": question_schema.dump(question)}), HTTPStatus.CREATED
 
     return _run_with_lock_retry(_publish)
