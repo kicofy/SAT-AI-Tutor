@@ -470,6 +470,7 @@ def _render_pdf_page_base64(pdf_path: str | Path, page_number: int) -> tuple[str
     except TypeError as exc:
         # Older pdfplumber without use_pdfium param
         current_app.logger.warning("PDF render: pdfplumber does not accept use_pdfium: %s; retrying bare", exc)
+        # Retry with plain open (no kwargs)
         with pdfplumber.open(path) as pdf:
             total_pages = len(pdf.pages)
             if page_number < 1 or page_number > total_pages:
@@ -483,7 +484,20 @@ def _render_pdf_page_base64(pdf_path: str | Path, page_number: int) -> tuple[str
     except Exception as exc:
         # Retry without pdfium if pdfium chokes on the file
         current_app.logger.warning("PDF render failed with pdfium: %s; retrying without pdfium", exc)
-        return _render(use_pdfium=False)
+        try:
+            return _render(use_pdfium=False)
+        except TypeError as exc2:
+            current_app.logger.warning("PDF render: pdfplumber does not accept use_pdfium (fallback): %s", exc2)
+            with pdfplumber.open(path) as pdf:
+                total_pages = len(pdf.pages)
+                if page_number < 1 or page_number > total_pages:
+                    raise ValueError(f"Page {page_number} out of range (1-{total_pages})")
+                page = pdf.pages[page_number - 1]
+                img = page.to_image(resolution=resolution).original.convert("RGB")
+                buffer = BytesIO()
+                img.save(buffer, format="PNG")
+                encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+                return f"data:image/png;base64,{encoded}", img.width, img.height
 
 
 def _get_draft_or_404(draft_id: int) -> QuestionDraft:
