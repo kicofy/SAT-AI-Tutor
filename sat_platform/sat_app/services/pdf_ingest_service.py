@@ -937,9 +937,10 @@ def _request_page_questions(
     }
     raw_text = _call_responses_api(
         payload,
-        purpose=f"page {page_index} extraction",
+        purpose="page_extraction",
         attempt_hook=attempt_hook,
         job_id=job_id,
+        ctx={"stage": "page_extraction", "page": page_index},
     )
     try:
         data = json.loads(raw_text)
@@ -1018,9 +1019,14 @@ def _normalize_question(
         payload["input"][1]["content"].append({"type": "input_image", "image_url": page_image_b64})
     raw_text = _call_responses_api(
         payload,
-        purpose="question normalization",
+        purpose="question_normalization",
         attempt_hook=attempt_hook,
         job_id=job_id,
+        ctx={
+            "stage": "normalize",
+            "page": question_payload.get("page"),
+            "qnum": _extract_question_number(question_payload),
+        },
     )
     data = json.loads(raw_text)
     difficulty_assessment = data.pop("difficulty_assessment", None)
@@ -1272,11 +1278,16 @@ def _solve_question_with_ai(
         "temperature": 0.1,
     }
     try:
-        raw_text = _call_responses_api(
-            payload,
-            purpose="question solving",
-            job_id=job_id,
-        )
+    raw_text = _call_responses_api(
+        payload,
+        purpose="question_solving",
+        job_id=job_id,
+        ctx={
+            "stage": "solve",
+            "page": question_payload.get("page"),
+            "qnum": _extract_question_number(question_payload),
+        },
+    )
         data = json.loads(raw_text)
         answer_value = data.get("answer_value")
         if isinstance(answer_value, str):
