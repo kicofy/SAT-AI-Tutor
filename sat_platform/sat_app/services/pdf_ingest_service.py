@@ -261,13 +261,33 @@ def _extract_coarse_questions(page: dict, *, job_id: int | None) -> List[dict]:
 
 # ---------------- Stage 2: per-item enrichment ----------------
 def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
+    ctx = {
+        "job_id": job_id,
+        "page": item.get("page") or item.get("page_index"),
+        "qnum": _extract_question_number(item),
+        "has_figure_raw": bool(item.get("has_figure")),
+        "choice_figs_raw": bool(item.get("choice_figure_keys")),
+    }
+    current_app.logger.info("Enrich start", extra=ctx)
+
     normalized = _normalize_question_item(item, job_id=job_id)
     if not normalized:
+        current_app.logger.warning("Normalize returned None", extra=ctx)
         return None
+    current_app.logger.info(
+        "Normalize done",
+        extra={
+            **ctx,
+            "question_type": normalized.get("question_type"),
+            "has_figure": bool(normalized.get("has_figure")),
+            "choice_figs": bool(normalized.get("choice_figure_keys")),
+        },
+    )
 
     # Solve if missing
     correct = normalized.get("correct_answer") or {}
     if not correct.get("value"):
+        current_app.logger.info("Solve start (missing correct_answer)", extra=ctx)
         solved = _solve_choice_answer(normalized, item, job_id=job_id)
         if solved and solved.get("answer_value"):
             normalized.setdefault("correct_answer", {})["value"] = solved["answer_value"]
@@ -275,6 +295,9 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                 meta = normalized.get("metadata") or {}
                 meta["ai_solution"] = solved["solution"]
                 normalized["metadata"] = meta
+            current_app.logger.info("Solve done", extra={**ctx, "answer": solved.get("answer_value")})
+        else:
+            current_app.logger.warning("Solve failed or empty", extra=ctx)
 
     # Explain: generate during ingest (not deferred to publish). Only honor a hard disable flag.
     has_fig = bool(normalized.get("has_figure"))
@@ -289,6 +312,11 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                 return question_explanation_service.generate_explanations_for_payload(payload)
 
         try:
+            explain_started = time.perf_counter()
+            current_app.logger.info(
+                "Explain start",
+                extra={**ctx, "has_figure": has_fig, "choice_figs": bool(choice_figs), "timeout": explain_timeout},
+            )
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_gen_expl, normalized)
                 expl = future.result(timeout=explain_timeout)
@@ -298,12 +326,26 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                     meta = {}
                 meta["ai_explanations"] = expl
                 normalized["metadata"] = meta
+                current_app.logger.info(
+                    "Explain done",
+                    extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
+                )
             else:
-                current_app.logger.warning("Explanation generation returned empty result")
+                current_app.logger.warning(
+                    "Explanation generation returned empty result",
+                    extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
+                )
         except FutureTimeout:
-            current_app.logger.warning("Explanation generation timed out after %.0fs", explain_timeout)
+            current_app.logger.warning(
+                "Explanation generation timed out after %.0fs",
+                explain_timeout,
+                extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
+            )
         except ai_explainer.AiExplainerError:
-            current_app.logger.warning("Explanation skipped due to AI error")
+            current_app.logger.warning(
+                "Explanation skipped due to AI error",
+                extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
+            )
         except Exception:
             current_app.logger.exception("Explanation generation failed")
     else:
