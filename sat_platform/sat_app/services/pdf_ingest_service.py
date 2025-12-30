@@ -1278,16 +1278,16 @@ def _solve_question_with_ai(
         "temperature": 0.1,
     }
     try:
-    raw_text = _call_responses_api(
-        payload,
-        purpose="question_solving",
-        job_id=job_id,
-        ctx={
-            "stage": "solve",
-            "page": question_payload.get("page"),
-            "qnum": _extract_question_number(question_payload),
-        },
-    )
+        raw_text = _call_responses_api(
+            payload,
+            purpose="question_solving",
+            job_id=job_id,
+            ctx={
+                "stage": "solve",
+                "page": question_payload.get("page"),
+                "qnum": _extract_question_number(question_payload),
+            },
+        )
         data = json.loads(raw_text)
         answer_value = data.get("answer_value")
         if isinstance(answer_value, str):
