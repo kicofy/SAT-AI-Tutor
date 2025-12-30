@@ -244,7 +244,13 @@ def _extract_coarse_questions(page: dict, *, job_id: int | None) -> List[dict]:
         ],
         "temperature": 0.1,
     }
-    raw = _call_responses_api(payload, purpose=f"page {page_index} extraction", attempt_hook=None, job_id=job_id)
+    raw = _call_responses_api(
+        payload,
+        purpose="page_extraction",
+        attempt_hook=None,
+        job_id=job_id,
+        ctx={"stage": "page_extraction", "page": page_index},
+    )
     try:
         data = json.loads(raw)
     except Exception:
@@ -450,7 +456,18 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
         ],
         "temperature": 0.1,
     }
-    raw = _call_responses_api(payload, purpose="question normalization", attempt_hook=None, job_id=job_id)
+    raw = _call_responses_api(
+        payload,
+        purpose="question_normalization",
+        attempt_hook=None,
+        job_id=job_id,
+        ctx={
+            "stage": "normalize",
+            "page": item.get("page") or item.get("page_index"),
+            "qnum": source_qnum,
+            "has_figure": has_figure,
+        },
+    )
     try:
         data = json.loads(raw)
     except Exception:
@@ -551,7 +568,17 @@ def _solve_choice_answer(normalized: dict, raw_item: dict, *, job_id: int | None
         "temperature": 0.1,
     }
     try:
-        raw = _call_responses_api(payload, purpose="question solving", attempt_hook=None, job_id=job_id)
+        raw = _call_responses_api(
+            payload,
+            purpose="question_solving",
+            attempt_hook=None,
+            job_id=job_id,
+            ctx={
+                "stage": "solve",
+                "page": raw_item.get("page") or raw_item.get("page_index"),
+                "qnum": _extract_question_number(raw_item),
+            },
+        )
         data = json.loads(raw)
         ans = data.get("answer_value")
         if isinstance(ans, str):
@@ -572,6 +599,7 @@ def _call_responses_api(
     purpose: str,
     attempt_hook: Optional[AttemptHook] = None,
     job_id: Optional[int] = None,
+    ctx: Optional[dict] = None,
 ) -> str:
     app = current_app
     api_key = app.config.get("OPENAI_API_KEY")
@@ -588,6 +616,14 @@ def _call_responses_api(
     attempt = 0
     watchdog_timeout = connect_timeout + read_timeout + 5
     heartbeat_interval = max(5.0, min(15.0, read_timeout / 4))
+
+    base_ctx = {
+        "job_id": job_id,
+        "purpose": purpose,
+        "model": model_name,
+    }
+    if ctx:
+        base_ctx.update(ctx)
 
     while True:
         attempt += 1
@@ -612,13 +648,11 @@ def _call_responses_api(
             log_event(
                 "openai_success",
                 {
-                    "job_id": job_id,
-                    "purpose": purpose,
+                    **base_ctx,
                     "status_code": response.status_code,
                     "attempt": attempt,
                     "max_attempts": max_attempts,
                     "duration_ms": int((time.perf_counter() - start_time) * 1000),
-                    "model": model_name,
                 },
             )
             if attempt_hook:
@@ -631,12 +665,10 @@ def _call_responses_api(
                 log_event(
                     "openai_failure",
                     {
-                        "job_id": job_id,
-                        "purpose": purpose,
+                        **base_ctx,
                         "attempt": attempt,
                         "max_attempts": max_attempts,
                         "duration_ms": int((time.perf_counter() - start_time) * 1000),
-                        "model": model_name,
                         "error": str(exc),
                     },
                 )
