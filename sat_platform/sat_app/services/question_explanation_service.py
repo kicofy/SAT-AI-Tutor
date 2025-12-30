@@ -8,6 +8,8 @@ from flask import current_app
 from ..extensions import db
 from ..models import Question, QuestionExplanationCache
 from . import ai_explainer
+from sqlalchemy.exc import OperationalError
+import time
 
 DEFAULT_LANGUAGES = ("en", "zh")
 
@@ -42,7 +44,7 @@ def ensure_explanation(
         explanation=explanation,
     )
     db.session.add(record)
-    db.session.commit()
+    _commit_with_retry()
     return record
 
 
@@ -62,10 +64,11 @@ def ensure_explanations_for_languages(
                 "Skipping explanation generation due to AI error",
                 extra={"question_id": question.id, "language": lang, "error": str(exc)},
             )
-        except Exception:  # pragma: no cover - defensive logging
+        except Exception as exc:  # pragma: no cover - defensive logging
+            db.session.rollback()
             current_app.logger.exception(
                 "Failed to generate explanation",
-                extra={"question_id": question.id, "language": lang},
+                extra={"question_id": question.id, "language": lang, "error": str(exc)},
             )
     return results
 
@@ -77,6 +80,21 @@ def delete_explanation(question_id: int, language: str | None = None) -> int:
     deleted = query.delete(synchronize_session=False)
     db.session.commit()
     return deleted
+
+
+def _commit_with_retry(attempts: int = 5, base_delay: float = 0.2) -> None:
+    """Commit with backoff to mitigate SQLite 'database is locked'."""
+    for attempt in range(attempts):
+        try:
+            db.session.commit()
+            return
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == attempts - 1:
+                db.session.rollback()
+                raise
+            db.session.rollback()
+            time.sleep(base_delay * (attempt + 1))
+    db.session.commit()
 
 
 class _PayloadQuestion:
