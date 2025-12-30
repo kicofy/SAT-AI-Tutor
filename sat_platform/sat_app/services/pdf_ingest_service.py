@@ -384,7 +384,12 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
     except Exception as exc:
         current_app.logger.warning("Validation/load failed: %s", exc)
         return None
-    return temp_data
+
+    # Ensure returned payload uses `metadata` key (not metadata_json) so drafts persist explanations
+    payload = dict(temp_data)
+    if "metadata_json" in payload and "metadata" not in payload:
+        payload["metadata"] = payload.pop("metadata_json")
+    return payload
 
 
 def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
