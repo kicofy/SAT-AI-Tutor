@@ -4,21 +4,29 @@ import styles from "./top-bar.module.css";
 import { useAuth } from "@/hooks/use-auth";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/hooks/use-i18n";
+import { useEffect, useMemo, useState } from "react";
 
 export function TopBar() {
   const { logout } = useAuth();
   const router = useRouter();
   const { t, locale } = useI18n();
 
-  const formatter = new Intl.DateTimeFormat(
-    locale === "zh" ? "zh-CN" : "en-US",
-    {
-      month: "long",
-      day: "numeric",
-      weekday: "long",
-    }
+  const [dateLabel, setDateLabel] = useState<string>("");
+
+  // Compute date on client after mount to avoid SSR/client mismatch
+  const formatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+        month: "long",
+        day: "numeric",
+        weekday: "long",
+      }),
+    [locale]
   );
-  const dateLabel = formatter.format(new Date());
+
+  useEffect(() => {
+    setDateLabel(formatter.format(new Date()));
+  }, [formatter]);
 
   function handleLogout() {
     logout();
