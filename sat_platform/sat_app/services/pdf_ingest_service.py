@@ -329,30 +329,57 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                 "Explain start",
                 extra={**ctx, "has_figure": has_fig, "choice_figs": bool(choice_figs), "timeout": explain_timeout},
             )
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_gen_expl, normalized)
-                expl = future.result(timeout=explain_timeout)
-            if expl:
-                meta = normalized.get("metadata") or {}
-                if not isinstance(meta, dict):
-                    meta = {}
-                meta["ai_explanations"] = expl
-                normalized["metadata"] = meta
-                current_app.logger.info(
-                    "Explain done",
+
+            result_box: dict[str, Any] = {}
+            exc_box: dict[str, Exception] = {}
+
+            def _worker():
+                try:
+                    result_box["expl"] = _gen_expl(normalized)
+                except Exception as exc:  # pragma: no cover - defensive
+                    exc_box["exc"] = exc
+
+            worker = threading.Thread(target=_worker, daemon=True)
+            worker.start()
+            elapsed = 0.0
+            slice_interval = 1.0
+            while worker.is_alive() and elapsed < explain_timeout:
+                wait_for = min(slice_interval, explain_timeout - elapsed)
+                worker.join(timeout=wait_for)
+                elapsed += wait_for
+
+            if worker.is_alive():
+                current_app.logger.warning(
+                    "Explanation generation timed out after %.0fs",
+                    explain_timeout,
                     extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
+                )
+            elif "exc" in exc_box:
+                current_app.logger.warning(
+                    "Explanation skipped due to error",
+                    extra={
+                        **ctx,
+                        "error": str(exc_box["exc"]),
+                        "elapsed_ms": int((time.perf_counter() - explain_started) * 1000),
+                    },
                 )
             else:
-                current_app.logger.warning(
-                    "Explanation generation returned empty result",
-                    extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
-                )
-        except FutureTimeout:
-            current_app.logger.warning(
-                "Explanation generation timed out after %.0fs",
-                explain_timeout,
-                extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
-            )
+                expl = result_box.get("expl")
+                if expl:
+                    meta = normalized.get("metadata") or {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    meta["ai_explanations"] = expl
+                    normalized["metadata"] = meta
+                    current_app.logger.info(
+                        "Explain done",
+                        extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
+                    )
+                else:
+                    current_app.logger.warning(
+                        "Explanation generation returned empty result",
+                        extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
+                    )
         except ai_explainer.AiExplainerError:
             current_app.logger.warning(
                 "Explanation skipped due to AI error",
