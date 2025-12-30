@@ -1711,6 +1711,11 @@ def publish_draft(draft_id: int):
     def _publish():
         payload = _coerce_draft_payload(draft.payload)
         precomputed_explanations = payload.pop("_ai_explanations", None)
+        # If ingest wrote explanations into metadata.ai_explanations, use them as precomputed
+        if not precomputed_explanations:
+            meta = payload.get("metadata") or {}
+            if isinstance(meta, dict):
+                precomputed_explanations = meta.get("ai_explanations")
         choice_keys: list[str] = []
         raw_choice_keys = payload.get("choice_figure_keys") or []
         if isinstance(raw_choice_keys, list):
@@ -1784,7 +1789,7 @@ def publish_draft(draft_id: int):
             except Exception:  # pragma: no cover - logging only
                 current_app.logger.exception(
                     "Failed to pre-generate explanations for question",
-                    extra={"question_id": question.id},
+                    extra={"question_id": question.id, "missing_langs": missing_langs},
                 )
         else:
             post_publish_langs = missing_langs
