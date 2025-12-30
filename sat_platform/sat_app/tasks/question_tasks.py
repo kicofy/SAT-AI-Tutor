@@ -92,7 +92,10 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     job_event_broker.publish({"type": "job", "payload": job.serialize()})
     try:
         if job.ingest_strategy == "vision_pdf":
-            def _progress(page_idx: int, total_pages: int, normalized_count: int, message: str | None = None) -> None:
+
+            def _progress(
+                page_idx: int, total_pages: int, normalized_count: int, message: str | None = None
+            ) -> None:
                 job.processed_pages = page_idx
                 job.total_pages = total_pages
                 if job.source and total_pages:
@@ -163,4 +166,5 @@ def _load_blocks(job: QuestionImportJob):
         except json.JSONDecodeError:
             raw = [{"type": "text", "content": raw, "metadata": {"source": "manual"}}]
     return raw
+
 
