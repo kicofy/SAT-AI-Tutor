@@ -80,6 +80,7 @@ SUGGESTION_EMAIL_KEY = "suggestion_email"
 _IMPORT_THREADS: dict[int, Thread] = {}
 _IMPORT_CANCEL_EVENTS: dict[int, Event] = {}
 _IMPORT_LOCK = Lock()
+_IMPORT_MAX_CONCURRENT = 1  # 单实例内并发导入上限，避免线程丢失/锁冲突
 
 
 def _commit_with_retry(attempts: int = 5, base_delay: float = 0.2) -> None:
@@ -105,6 +106,11 @@ def _run_with_lock_retry(fn, attempts: int = 5, base_delay: float = 0.3):
             db.session.rollback()
             time.sleep(base_delay * (attempt + 1))
     return None
+
+
+def _active_imports() -> int:
+    with _IMPORT_LOCK:
+        return sum(1 for thread in _IMPORT_THREADS.values() if thread.is_alive())
 
 
 def schedule_import_autoresume(app) -> None:
@@ -581,7 +587,7 @@ def _ensure_aware(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _prune_stale_jobs(max_age_hours: int = 2, stall_minutes: int = 10):
+def _prune_stale_jobs(max_age_hours: int = 2, stall_minutes: int = 3):
     now = datetime.now(timezone.utc)
     age_cutoff = now - timedelta(hours=max_age_hours)
     stall_cutoff = now - timedelta(minutes=stall_minutes)
@@ -1287,6 +1293,11 @@ def _run_job_async(app, job_id: int) -> None:
                 with _IMPORT_LOCK:
                     _IMPORT_CANCEL_EVENTS.pop(job_id, None)
                     _IMPORT_THREADS.pop(job_id, None)
+            # 线程结束后尝试启动队列中的下一个任务
+            try:
+                _maybe_start_pending(app)
+            except Exception:
+                current_app.logger.exception("Failed to dispatch next pending import job")
 
     thread = Thread(target=_target, daemon=True)
     with _IMPORT_LOCK:
@@ -1302,7 +1313,38 @@ def _dispatch_job(job: QuestionImportJob) -> None:
         process_job(job.id)
         db.session.refresh(job)
         return
+    # 简单排队：同一实例只允许 _IMPORT_MAX_CONCURRENT 个并发导入
+    if _active_imports() >= _IMPORT_MAX_CONCURRENT:
+        job.status = "pending"
+        job.status_message = "Queued (waiting for another import to finish)"
+        job.last_progress_at = datetime.now(timezone.utc)
+        _commit_with_retry()
+        job_event_broker.publish({"type": "job", "payload": job.serialize()})
+        return
     _run_job_async(app, job.id)
+
+
+def _maybe_start_pending(app) -> None:
+    """If capacity is free, start the oldest pending import job."""
+    if app.config.get("TESTING") or app.config.get("IMPORT_JOBS_SYNC"):
+        return
+    # 容量检查
+    if _active_imports() >= _IMPORT_MAX_CONCURRENT:
+        return
+    with app.app_context():
+        pending = (
+            QuestionImportJob.query.filter(QuestionImportJob.status == "pending")
+            .order_by(QuestionImportJob.created_at.asc())
+            .first()
+        )
+        if not pending:
+            return
+        # 防止重复启动
+        with _IMPORT_LOCK:
+            thread = _IMPORT_THREADS.get(pending.id)
+            if thread and thread.is_alive():
+                return
+        _run_job_async(app, pending.id)
 
 
 @admin_bp.post("/questions/upload")
