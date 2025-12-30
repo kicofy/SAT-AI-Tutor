@@ -61,15 +61,20 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
         raise ValueError(f"Job {job_id} not found")
     # Resume-aware: keep existing drafts and continue from next page
     existing_drafts = list(job.drafts)
+    # Start from persisted progress if drafts不存在（比如重启后内存丢失但DB已写processed_pages）
     base_questions = len(existing_drafts)
-    max_page_done = 0
-    for draft in existing_drafts:
-        try:
-            payload_page = draft.payload.get("source_page") or draft.payload.get("page")
-            if payload_page is not None:
-                max_page_done = max(max_page_done, int(payload_page))
-        except Exception:
-            continue
+    max_page_done = job.processed_pages or 0
+    if existing_drafts:
+        for draft in existing_drafts:
+            try:
+                payload_page = draft.payload.get("source_page") or draft.payload.get("page")
+                if payload_page is not None:
+                    max_page_done = max(max_page_done, int(payload_page))
+            except Exception:
+                continue
+    else:
+        # 没有草稿时，尝试使用已持久化的 parsed_questions
+        base_questions = job.parsed_questions or 0
 
     job.status = "processing"
     job.error_message = None
