@@ -1695,7 +1695,7 @@ def delete_draft(draft_id: int):
     if source_id:
         question_service.cleanup_source_if_unused(source_id)
     db.session.commit()
-    job_event_broker.publish({"type": "draft_removed", "payload": {"id": draft_id}})
+    job_event_broker.publish({"type": "draft_removed", "payload": {"id": draft_id, "job_id": draft.job_id}})
     return "", HTTPStatus.NO_CONTENT
 
 
