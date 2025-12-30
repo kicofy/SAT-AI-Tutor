@@ -298,20 +298,15 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
         },
     )
 
-    # Solve if missing
-    correct = normalized.get("correct_answer") or {}
-    if not correct.get("value"):
-        current_app.logger.info("Solve start (missing correct_answer)", extra=ctx)
-        solved = _solve_choice_answer(normalized, item, job_id=job_id)
-        if solved and solved.get("answer_value"):
-            normalized.setdefault("correct_answer", {})["value"] = solved["answer_value"]
-            if solved.get("solution"):
-                meta = normalized.get("metadata") or {}
-                meta["ai_solution"] = solved["solution"]
-                normalized["metadata"] = meta
-            current_app.logger.info("Solve done", extra={**ctx, "answer": solved.get("answer_value")})
-        else:
-            current_app.logger.warning("Solve failed or empty", extra=ctx)
+    # Always solve via API to get an explicit answer (ignore solution text for storage)
+    current_app.logger.info("Solve start (always)", extra=ctx)
+    solved = _solve_choice_answer(normalized, item, job_id=job_id)
+    if solved and solved.get("answer_value"):
+        normalized.setdefault("correct_answer", {})["value"] = solved["answer_value"]
+        # Deliberately drop solver's solution text; only keep the final answer
+        current_app.logger.info("Solve done", extra={**ctx, "answer": solved.get("answer_value")})
+    else:
+        current_app.logger.warning("Solve failed or empty", extra=ctx)
 
     # Explain: generate during ingest (not deferred to publish). Only honor a hard disable flag.
     has_fig = bool(normalized.get("has_figure"))
