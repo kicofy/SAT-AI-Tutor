@@ -132,9 +132,26 @@ def schedule_import_autoresume(app) -> None:
             if not inflight:
                 return
             for job in inflight:
+                # 从草稿和已记录进度中恢复游标，避免重启后从0开始
+                draft_pages = []
+                for draft in job.drafts:
+                    try:
+                        payload = draft.payload or {}
+                        payload_page = payload.get("source_page") or payload.get("page")
+                        if payload_page is not None:
+                            draft_pages.append(int(payload_page))
+                    except Exception:
+                        continue
+                max_page_from_drafts = max(draft_pages) if draft_pages else 0
+                if (job.processed_pages or 0) < max_page_from_drafts:
+                    job.processed_pages = max_page_from_drafts
+                # 草稿数量即已规范化题目数，便于前端展示
+                job.parsed_questions = max(len(job.drafts), job.parsed_questions or 0)
                 job.status = "pending"
                 job.error_message = None
-                job.status_message = "Resuming after server restart"
+                job.status_message = (
+                    f"Resuming after server restart (page {job.processed_pages + 1})"
+                )
                 job.last_progress_at = now
                 db.session.add(job)
                 _commit_with_retry()
