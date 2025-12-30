@@ -77,6 +77,9 @@ def ingest_pdf_document(
     end_page: int | None = None,
     base_pages_completed: int = 0,
     base_questions: int = 0,
+    coarse_items: Optional[List[dict]] = None,
+    skip_normalized_count: int = 0,
+    coarse_persist: Optional[Callable[[List[dict]], None]] = None,
 ) -> List[dict]:
     """
     Sequential pipeline:
@@ -90,8 +93,8 @@ def ingest_pdf_document(
     if cancel_event and cancel_event.is_set():
         return []
 
+    cached_items: List[dict] = list(coarse_items or [])
     pages = _extract_pages_seq(path, start_page=start_page, end_page=end_page, progress_cb=progress_cb)
-    coarse_items: List[dict] = []
     if progress_cb:
         progress_cb(base_pages_completed, len(pages), base_questions, "Starting PDF ingestion")
     for p in pages:
@@ -101,18 +104,21 @@ def ingest_pdf_document(
             it["page_index"] = idx
             it["page"] = idx  # persist page for resume bookkeeping
             it["page_image_b64"] = p.get("page_image_b64")
-            coarse_items.append(it)
+            cached_items.append(it)
+        if coarse_persist:
+            coarse_persist(cached_items)
         if progress_cb:
             progress_cb(
                 idx,
                 len(pages),
-                base_questions + len(coarse_items),
-                f"Coarse total: {len(coarse_items)} after page {idx}",
+                base_questions + len(cached_items),
+                f"Coarse total: {len(cached_items)} after page {idx}",
             )
 
     enriched: List[dict] = []
-    total = len(coarse_items)
-    for i, item in enumerate(coarse_items, start=1):
+    total = len(cached_items)
+    start_idx = max(0, skip_normalized_count)
+    for i, item in enumerate(cached_items[start_idx:], start=start_idx + 1):
         if cancel_event and cancel_event.is_set():
             break
         eq = _enrich_item(item, job_id=job_id)

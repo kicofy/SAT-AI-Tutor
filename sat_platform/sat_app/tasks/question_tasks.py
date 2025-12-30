@@ -64,6 +64,8 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     # Start from persisted progress if drafts不存在（比如重启后内存丢失但DB已写processed_pages）
     base_questions = max(len(existing_drafts), job.parsed_questions or 0)
     max_page_done = job.processed_pages or 0
+    coarse_cache = job.payload_json if isinstance(job.payload_json, list) else []
+    skip_normalized = base_questions
     if existing_drafts:
         for draft in existing_drafts:
             try:
@@ -75,6 +77,7 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     else:
         # 没有草稿时，尝试使用已持久化的 parsed_questions（保留上次 coarse 阶段的计数）
         base_questions = max(base_questions, job.parsed_questions or 0)
+        skip_normalized = base_questions
 
     job.status = "processing"
     job.error_message = None
@@ -108,6 +111,10 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 _commit_with_retry()
                 job_event_broker.publish({"type": "job", "payload": job.serialize()})
 
+            def _persist_coarse(items: list[dict]) -> None:
+                job.payload_json = items
+                _commit_with_retry()
+
             def _on_question(payload: dict) -> None:
                 _save_draft(job, payload)
                 job.parsed_questions += 1
@@ -122,6 +129,9 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 start_page=max_page_done + 1,
                 base_pages_completed=max_page_done,
                 base_questions=base_questions,
+                coarse_items=coarse_cache,
+                skip_normalized_count=skip_normalized,
+                coarse_persist=_persist_coarse,
             )
             job.total_blocks = job.parsed_questions
         else:
