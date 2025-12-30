@@ -469,7 +469,7 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
       setDraftActionMessage(null);
       setDraftDeleteId(id);
       await deleteDraft(id);
-      await loadImports();
+      removeDraft(id);
     } catch (error: unknown) {
       setDraftActionMessage(extractErrorMessage(error, "Failed to delete draft."));
     } finally {
@@ -488,7 +488,7 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
         return;
       }
       await publishDraft(draft.id);
-      await loadImports();
+      removeDraft(draft.id);
       setDraftActionMessage("Draft published to the question bank.");
     } catch (error: unknown) {
       setDraftActionMessage(extractErrorMessage(error, "Failed to publish draft."));
