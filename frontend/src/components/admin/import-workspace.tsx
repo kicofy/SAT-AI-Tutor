@@ -258,8 +258,8 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
       setImportsLoading(true);
       setImportsError(null);
       const data = await fetchImportStatus();
-      const jobList = (data?.jobs as ImportJob[]) || [];
-      const draftList = (data?.drafts as DraftPreview[]) || [];
+      const jobList = ((data?.jobs as ImportJob[]) || []).slice().sort((a, b) => b.id - a.id);
+      const draftList = ((data?.drafts as DraftPreview[]) || []).slice().sort((a, b) => b.id - a.id);
       setJobs(jobList);
       setDrafts(draftList);
       syncFigureState(draftList);
