@@ -114,6 +114,26 @@ class _PayloadQuestion:
         meta_img = self.metadata_json.get("page_image_b64")
         if isinstance(meta_img, str) and meta_img.strip():
             self.page_image_b64 = meta_img.strip()
+        direct_img = payload.get("page_image_b64")
+        if isinstance(direct_img, str) and direct_img.strip():
+            self.page_image_b64 = direct_img.strip()
+        # Accept pre-resolved figures (with image_url) from payload
+        self.figures = []
+        raw_figs = payload.get("figures") or []
+        if isinstance(raw_figs, list):
+            for fig in raw_figs:
+                if not isinstance(fig, dict):
+                    continue
+                url = fig.get("image_url")
+                if not url:
+                    continue
+                self.figures.append(
+                    {
+                        "id": fig.get("id"),
+                        "description": fig.get("description"),
+                        "image_url": url,
+                    }
+                )
         passage_payload = payload.get("passage")
         passage_text = None
         if isinstance(passage_payload, dict):
@@ -121,7 +141,6 @@ class _PayloadQuestion:
         if not passage_text:
             passage_text = self.metadata_json.get("passage_text") or self.metadata_json.get("passage_excerpt")
         self.passage = SimpleNamespace(content_text=passage_text) if passage_text else None
-        self.figures = []
 
 
 def generate_explanations_for_payload(payload: dict, languages: Iterable[str] | None = None) -> dict[str, dict]:
@@ -129,6 +148,13 @@ def generate_explanations_for_payload(payload: dict, languages: Iterable[str] | 
     figures: list[dict] = []
     if question_like.page_image_b64:
         figures.append({"id": "page", "description": "page_image", "image_url": question_like.page_image_b64})
+    if question_like.figures:
+        figures.extend(question_like.figures)
+    # If has_figure but no usable image, log to aid debugging
+    if question_like.has_figure and not figures:
+        current_app.logger.warning(
+            "AI explanation: has_figure but no images available", extra={"question_id": question_like.id}
+        )
     langs = list(languages or DEFAULT_LANGUAGES)
     results: dict[str, dict] = {}
     for lang in langs:
