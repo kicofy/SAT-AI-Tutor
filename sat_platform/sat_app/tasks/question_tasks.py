@@ -72,10 +72,9 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     job = db.session.get(QuestionImportJob, job_id)
     if not job:
         raise ValueError(f"Job {job_id} not found")
-    # Resume-aware: keep existing drafts and continue from next page
+    # Resume-aware: use already normalized drafts as the source of truth.
     existing_drafts = list(job.drafts)
-    # Start from persisted progress if drafts不存在（比如重启后内存丢失但DB已写processed_pages）
-    base_questions = max(len(existing_drafts), job.parsed_questions or 0)
+    base_questions = len(existing_drafts)
     max_page_done = job.processed_pages or 0
     coarse_cache = job.payload_json if isinstance(job.payload_json, list) else []
     # Determine max page present in coarse cache
@@ -98,10 +97,6 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                     max_page_done = max(max_page_done, int(payload_page))
             except Exception:
                 continue
-    else:
-        # 没有草稿时，尝试使用已持久化的 parsed_questions（保留上次 coarse 阶段的计数）
-        base_questions = max(base_questions, job.parsed_questions or 0)
-        skip_normalized = base_questions
 
     job.status = "processing"
     job.error_message = None
