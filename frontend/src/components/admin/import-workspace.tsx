@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { isAxiosError } from "axios";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/app-shell";
 import { DashboardCard } from "@/components/ui/dashboard-card";
 import { FigureCropper } from "@/components/admin/figure-cropper";
@@ -138,7 +138,6 @@ type ImportWorkspaceProps = {
 export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const queryClient = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
   const [uploadState, setUploadState] = useState<"idle" | "uploading">("idle");
   const [jobResult, setJobResult] = useState<unknown>(null);
@@ -534,13 +533,15 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
           fetchDraftFigureSource(draft.id),
           fetchDraftFigures(draft.id).catch(() => ({ figures: [] })),
         ]);
-        const figures = Array.isArray(figuresResponse?.figures) ? figuresResponse.figures : [];
+        const figures: FigureSource[] = Array.isArray(figuresResponse?.figures)
+          ? (figuresResponse.figures as FigureSource[])
+          : [];
         const existingFigure =
           kind === "choice"
             ? (() => {
                 const cid = (choiceId || "").toLowerCase();
                 if (!cid) return undefined;
-                return figures.find((fig) =>
+                return figures.find((fig: FigureSource) =>
                   typeof fig.description === "string"
                     ? fig.description.toLowerCase().includes(`choice ${cid}`)
                     : false
@@ -548,7 +549,7 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
               })()
             : (() => {
                 const nonChoice = figures.find(
-                  (fig) =>
+                  (fig: FigureSource) =>
                     !(typeof fig.description === "string" && fig.description.toLowerCase().includes("choice"))
                 );
                 return nonChoice || figures[0];
