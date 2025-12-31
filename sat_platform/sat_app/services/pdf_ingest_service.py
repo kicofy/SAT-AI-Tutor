@@ -418,7 +418,14 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
 
             def _worker():
                 try:
-                    result_box["expl"] = _gen_expl(normalized)
+                    # Pass page image so explanations can use multimodal input
+                    meta_for_expl = dict(normalized)
+                    if item.get("page_image_b64"):
+                        meta_for_expl.setdefault("metadata", {})
+                        if not isinstance(meta_for_expl["metadata"], dict):
+                            meta_for_expl["metadata"] = {}
+                        meta_for_expl["metadata"]["page_image_b64"] = item.get("page_image_b64")
+                    result_box["expl"] = _gen_expl(meta_for_expl)
                 except Exception as exc:  # pragma: no cover - defensive
                     exc_box["exc"] = exc
 

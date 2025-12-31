@@ -110,6 +110,10 @@ class _PayloadQuestion:
         self.skill_tags = payload.get("skill_tags") or []
         self.metadata_json = payload.get("metadata") or payload.get("metadata_json") or {}
         self.has_figure = bool(payload.get("has_figure"))
+        self.page_image_b64 = None
+        meta_img = self.metadata_json.get("page_image_b64")
+        if isinstance(meta_img, str) and meta_img.strip():
+            self.page_image_b64 = meta_img.strip()
         passage_payload = payload.get("passage")
         passage_text = None
         if isinstance(passage_payload, dict):
@@ -122,6 +126,9 @@ class _PayloadQuestion:
 
 def generate_explanations_for_payload(payload: dict, languages: Iterable[str] | None = None) -> dict[str, dict]:
     question_like = _PayloadQuestion(payload)
+    figures: list[dict] = []
+    if question_like.page_image_b64:
+        figures.append({"id": "page", "description": "page_image", "image_url": question_like.page_image_b64})
     langs = list(languages or DEFAULT_LANGUAGES)
     results: dict[str, dict] = {}
     for lang in langs:
@@ -130,6 +137,7 @@ def generate_explanations_for_payload(payload: dict, languages: Iterable[str] | 
             user_answer=payload.get("correct_answer"),
             user_language=lang,
             depth="standard",
+            figures=figures,
         )
     return results
 
