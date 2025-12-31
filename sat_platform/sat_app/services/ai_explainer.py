@@ -6,7 +6,9 @@ import json
 from typing import Any, Dict, List
 from pathlib import Path
 import base64
+import time
 
+import requests
 from flask import current_app
 
 from .ai_client import get_ai_client
@@ -60,15 +62,26 @@ def _encode_figure_image(path: Path) -> str | None:
 
 
 def _collect_question_figures(question) -> List[Dict[str, Any]]:
-    figures = []
+    """Collect figures either from ORM relationship (.figures) or pre-baked list/dicts."""
+    figures: List[Dict[str, Any]] = []
     figure_query = getattr(question, "figures", None)
     if figure_query is None:
         return figures
-    try:
-        figure_items = figure_query.all()
-    except Exception:  # pragma: no cover - defensive
-        figure_items = []
+    figure_items: List[Any] = []
+    if isinstance(figure_query, list):
+        figure_items = figure_query
+    else:
+        try:
+            figure_items = figure_query.all()
+        except Exception:  # pragma: no cover - defensive
+            figure_items = []
     for item in figure_items:
+        pre_resolved = getattr(item, "image_url", None) or (item.get("image_url") if isinstance(item, dict) else None)
+        description = getattr(item, "description", None) or (item.get("description") if isinstance(item, dict) else None)
+        figure_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else None)
+        if pre_resolved:
+            figures.append({"id": figure_id, "description": description, "image_url": pre_resolved})
+            continue
         image_path = getattr(item, "image_path", None)
         if not image_path:
             continue
@@ -77,15 +90,15 @@ def _collect_question_figures(question) -> List[Dict[str, Any]]:
             continue
         figures.append(
             {
-                "id": item.id,
-                "description": item.description,
+                "id": figure_id,
+                "description": description,
                 "image_url": data_url,
             }
         )
     return figures
 
 
-def _build_messages(question, user_answer, user_language: str, depth: str, figures: List[Dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_messages(question, user_answer, user_language: str, depth: str, figures: List[Dict[str, Any]]) -> dict:
     language_tag = _resolve_language_tag(user_language)
     language_name = "Chinese" if language_tag == "zh" else "English"
     schema_description = json.dumps(
@@ -200,21 +213,21 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         "If the skill tags indicate Writing, emphasize grammar/logic checkpoints; if Reading, spotlight keyword tracking and evidence sentences.\n"
         "Return ONLY the JSON object."
     )
-    user_content: List[Dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
     for figure in figures:
         user_content.append(
             {
-                "type": "image_url",
+                "type": "input_image",
                 "image_url": {
                     "url": figure["image_url"],
                     "detail": "high",
                 },
             }
         )
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_content},
-    ]
+    return {
+        "system_prompt": system_prompt,
+        "user_content": user_content,
+    }
 
 
 def _validate_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -232,7 +245,14 @@ class AiExplainerError(Exception):
     """Raised when the AI explainer cannot return a valid payload."""
 
 
-def generate_explanation(question, user_answer, user_language: str = "bilingual", depth: str = "standard"):
+def generate_explanation(
+    question,
+    user_answer,
+    user_language: str = "bilingual",
+    depth: str = "standard",
+    *,
+    figures: List[Dict[str, Any]] | None = None,
+):
     app = current_app
     if not app.config.get("AI_EXPLAINER_ENABLE", False):
         return {
@@ -244,14 +264,84 @@ def generate_explanation(question, user_answer, user_language: str = "bilingual"
             "steps": [],
         }
 
-    client = get_ai_client()
-    figures = _collect_question_figures(question)
-    messages = _build_messages(question, user_answer, user_language, depth, figures)
-    raw = client.chat(messages)
-    content = raw["choices"][0]["message"]["content"]
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-        raise AiExplainerError(f"Invalid JSON from explainer: {content[:200]}") from exc
-    return _validate_payload(payload)
+    # Gather figures: explicit list wins, then ORM figures, then page image in metadata.
+    collected_figures: List[Dict[str, Any]] = []
+    if figures:
+        collected_figures.extend(figures)
+    collected_figures.extend(_collect_question_figures(question))
+    metadata = getattr(question, "metadata_json", {}) or {}
+    page_img = metadata.get("page_image_b64")
+    if isinstance(page_img, str) and page_img.strip():
+        collected_figures.insert(
+            0,
+            {"id": "page", "description": "page_image", "image_url": page_img.strip()},
+        )
+
+    prompt = _build_messages(question, user_answer, user_language, depth, collected_figures)
+
+    payload = {
+        "model": app.config.get("AI_EXPLAINER_MODEL", get_ai_client().default_model),
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": prompt["system_prompt"]}]},
+            {"role": "user", "content": prompt["user_content"]},
+        ],
+        "temperature": 0.2,
+    }
+
+    api_key = app.config.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY / AI_API_KEY is not configured")
+    base_url = app.config.get("AI_API_BASE", "https://api.openai.com/v1").rstrip("/")
+    connect_timeout = app.config.get("AI_CONNECT_TIMEOUT_SEC", 15)
+    read_timeout = app.config.get("AI_READ_TIMEOUT_SEC", 120)
+    max_retries = max(1, int(app.config.get("AI_API_MAX_RETRIES", 3)))
+    backoff = float(app.config.get("AI_API_RETRY_BACKOFF", 2.0))
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            response = requests.post(
+                f"{base_url}/responses",
+                headers=headers,
+                json=payload,
+                timeout=(connect_timeout, read_timeout),
+            )
+            response.raise_for_status()
+            raw = response.json()
+            output_text = None
+            if isinstance(raw, dict):
+                output = raw.get("output")
+                if isinstance(output, list) and output:
+                    content = output[0].get("content") if isinstance(output[0], dict) else None
+                    if isinstance(content, list) and content:
+                        text_obj = content[0]
+                        if isinstance(text_obj, dict):
+                            output_text = text_obj.get("text") or text_obj.get("output_text")
+                # legacy chat fallback
+                if not output_text and raw.get("choices"):
+                    output_text = raw["choices"][0]["message"]["content"]
+            if not output_text:
+                raise AiExplainerError(f"Empty response content: {raw}")
+            payload_json = json.loads(output_text)
+            return _validate_payload(payload_json)
+        except requests.RequestException as exc:
+            if attempt >= max_retries:
+                raise
+            delay = backoff * attempt
+            app.logger.warning(
+                "AI explainer call failed (attempt %s/%s): %s. Retrying in %.1fs",
+                attempt,
+                max_retries,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+        except json.JSONDecodeError as exc:
+            raise AiExplainerError("Invalid JSON from explainer") from exc
 
