@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
+from urllib.parse import urlparse
 
 from flask import current_app, render_template, request
 from werkzeug.exceptions import BadRequest
@@ -90,6 +91,17 @@ def confirm_password_reset(token: str, new_password: str) -> User:
 def _current_origin() -> str | None:
     """Best-effort origin from the incoming request (honor proxies)."""
     try:
+        # Highest priority: browser-sent Origin header (includes scheme/host/port).
+        origin = request.headers.get("Origin")
+        if origin:
+            return origin.rstrip("/")
+        # Next: Referer (fallback when Origin absent for GET).
+        referer = request.headers.get("Referer")
+        if referer:
+            parsed = urlparse(referer)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
         # 1) Forwarded header (standard)
         fwd = request.headers.get("Forwarded")
         if fwd:
