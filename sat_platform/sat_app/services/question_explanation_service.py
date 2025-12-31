@@ -146,7 +146,7 @@ class _PayloadQuestion:
 def generate_explanations_for_payload(payload: dict, languages: Iterable[str] | None = None) -> dict[str, dict]:
     question_like = _PayloadQuestion(payload)
     figures: list[dict] = []
-    if question_like.page_image_b64:
+    if question_like.has_figure and question_like.page_image_b64:
         figures.append({"id": "page", "description": "page_image", "image_url": question_like.page_image_b64})
     if question_like.figures:
         figures.extend(question_like.figures)

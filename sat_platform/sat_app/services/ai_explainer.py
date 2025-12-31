@@ -274,14 +274,16 @@ def generate_explanation(
             "steps": [],
         }
 
-    # Gather figures: explicit list wins, then ORM figures, then page image in metadata.
+    has_figure_flag = bool(getattr(question, "has_figure", False))
+
+    # Gather figures: explicit list wins, then ORM figures, then page image in metadata (only if tagged).
     collected_figures: List[Dict[str, Any]] = []
     if figures:
         collected_figures.extend(figures)
     collected_figures.extend(_collect_question_figures(question))
     metadata = getattr(question, "metadata_json", {}) or {}
     page_img = metadata.get("page_image_b64")
-    if isinstance(page_img, str) and page_img.strip():
+    if has_figure_flag and isinstance(page_img, str) and page_img.strip():
         collected_figures.insert(
             0,
             {"id": "page", "description": "page_image", "image_url": page_img.strip()},
@@ -303,6 +305,10 @@ def generate_explanation(
         fig = dict(fig)
         fig["image_url"] = url
         deduped.append(fig)
+
+    # If the question is not tagged with figure, drop any page-level image to avoid over-sending.
+    if not has_figure_flag:
+        deduped = [f for f in deduped if f.get("id") != "page"]
 
     # Always prefer the page image first; cap the total images.
     max_images = int(current_app.config.get("AI_EXPLAINER_MAX_IMAGES", 2))
@@ -329,7 +335,7 @@ def generate_explanation(
             {"role": "user", "content": prompt["user_content"]},
         ],
         # Structured outputs per Responses API: use text.format, not response_format.
-        "text": {"format": {"type": "json_object"}},  # ✅ format 是 object
+        "text": {"format": {"type":"json_object"}},  # ✅ format 是 object
         "temperature": 0.2,
     }
 

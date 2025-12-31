@@ -406,7 +406,16 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                 current_app.config.get("AI_TIMEOUT_SECONDS", 120),
             )
         )
-        explain_timeout = float(current_app.config.get("AI_EXPLAIN_TIMEOUT_SEC", ai_read_timeout))
+        explain_timeout_per_lang = float(current_app.config.get("AI_EXPLAIN_TIMEOUT_SEC", ai_read_timeout))
+        # Allow time per language/version instead of a single shared budget.
+        langs_cfg = current_app.config.get("AI_EXPLAIN_LANGUAGES")
+        if isinstance(langs_cfg, (list, tuple)) and langs_cfg:
+            lang_count = len(langs_cfg)
+        else:
+            lang_count = len(getattr(question_explanation_service, "DEFAULT_LANGUAGES", ["en", "zh"]))
+        explain_timeout = explain_timeout_per_lang * max(1, lang_count)
+        # Small overhead buffer so coordination code has time to join/log.
+        explain_timeout += min(10.0, explain_timeout_per_lang * 0.25)
         app_obj = current_app._get_current_object()
 
         def _gen_expl(payload: dict):
