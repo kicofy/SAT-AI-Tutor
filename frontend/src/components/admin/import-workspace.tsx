@@ -1599,7 +1599,12 @@ function DraftEditor({ draft, onSubmit, isSaving, error, onCaptureChoiceFigure, 
       ? (payload.answer_schema?.acceptable as unknown[]).map((v) => String(v)).join(", ")
       : ""
   );
-  const [tolerance, setTolerance] = useState<number | "">(payload.answer_schema?.tolerance ?? "");
+  const initialTolerance =
+    typeof (payload.answer_schema as any)?.tolerance === "number" &&
+    Number.isFinite((payload.answer_schema as any)?.tolerance)
+      ? Number((payload.answer_schema as any)?.tolerance)
+      : "";
+  const [tolerance, setTolerance] = useState<number | "">(initialTolerance);
   const [skillTagsInput, setSkillTagsInput] = useState((payload.skill_tags || []).join(", "));
   const [estimatedTime, setEstimatedTime] = useState<number | "">(payload.estimated_time_sec ?? "");
   const [irtA, setIrtA] = useState<number | "">(payload.irt_a ?? "");
@@ -1656,7 +1661,12 @@ function DraftEditor({ draft, onSubmit, isSaving, error, onCaptureChoiceFigure, 
         ? (nextPayload.answer_schema?.acceptable as unknown[]).map((v) => String(v)).join(", ")
         : ""
     );
-    setTolerance(nextPayload.answer_schema?.tolerance ?? "");
+    const nextTolerance =
+      typeof (nextPayload.answer_schema as any)?.tolerance === "number" &&
+      Number.isFinite((nextPayload.answer_schema as any)?.tolerance)
+        ? Number((nextPayload.answer_schema as any)?.tolerance)
+        : "";
+    setTolerance(nextTolerance);
     setSkillTagsInput((nextPayload.skill_tags || []).join(", "));
     setEstimatedTime(nextPayload.estimated_time_sec ?? "");
     setIrtA(nextPayload.irt_a ?? "");
