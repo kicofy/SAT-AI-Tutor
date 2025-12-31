@@ -1212,6 +1212,35 @@ def delete_source(source_id: int):
     return "", HTTPStatus.NO_CONTENT
 
 
+@admin_bp.delete("/sources/<int:source_id>/force")
+@jwt_required()
+def force_delete_source(source_id: int):
+    """
+    Force delete a PDF collection (source) along with all associated questions, drafts, and figures.
+    Use when normal delete is blocked by existing items.
+    """
+    if not require_admin():
+        return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
+    source = QuestionSource.query.filter_by(id=source_id).first()
+    if not source:
+        abort(404)
+
+    # Delete questions (and their figures/logs/explanations) for this source
+    questions = Question.query.filter_by(source_id=source_id).all()
+    for q in questions:
+        question_service.delete_question(q, commit=False)
+
+    # Delete drafts for this source
+    drafts = QuestionDraft.query.filter_by(source_id=source_id).all()
+    for d in drafts:
+        db.session.delete(d)
+
+    # Clean up source and commit
+    question_service.cleanup_source_if_unused(source_id)
+    db.session.commit()
+    return jsonify({"message": "Force deleted source", "question_deleted": len(questions), "draft_deleted": len(drafts)}), HTTPStatus.OK
+
+
 @admin_bp.post("/questions/<int:question_id>/explanations/clear")
 @jwt_required()
 def clear_question_explanations(question_id: int):
