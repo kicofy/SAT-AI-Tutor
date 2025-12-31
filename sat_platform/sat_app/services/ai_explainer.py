@@ -217,7 +217,8 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
     user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
     for figure in figures:
         url = figure.get("image_url")
-        # Normalize to a plain string; Responses API requires image_url to be a string (URL or data URL).
+        # The Responses API expects image_url to be a string (URL or data URL).
+        # Some upstream code may still pass {"url": "...", "detail": "..."} — normalize that here.
         if isinstance(url, dict):
             url = url.get("url") or url.get("data") or url.get("image_url")
         if not isinstance(url, str):
@@ -292,8 +293,8 @@ def generate_explanation(
             {"role": "system", "content": [{"type": "input_text", "text": prompt["system_prompt"]}]},
             {"role": "user", "content": prompt["user_content"]},
         ],
-        # Structured outputs: Responses API uses response_format to enforce JSON object output.
-        "response_format": {"type": "json_object"},
+        # Structured outputs per Responses API: use text.format, not response_format.
+        "text": {"format": "json_object"},
         "temperature": 0.2,
     }
 
@@ -328,31 +329,18 @@ def generate_explanation(
                 )
                 response.raise_for_status()
             raw = response.json()
-            output_text_parts: List[str] = []
+            output_text = None
             if isinstance(raw, dict):
-                # Responses API: output is a list of "message" objects with content
                 output = raw.get("output")
-                if isinstance(output, list):
-                    for item in output:
-                        if not isinstance(item, dict):
-                            continue
-                        contents = item.get("content")
-                        if not isinstance(contents, list):
-                            continue
-                        for content in contents:
-                            if not isinstance(content, dict):
-                                continue
-                            ctype = content.get("type")
-                            if ctype in {"output_text", "text"}:
-                                text_val = content.get("text") or content.get("output_text")
-                                if isinstance(text_val, str):
-                                    output_text_parts.append(text_val)
+                if isinstance(output, list) and output:
+                    content = output[0].get("content") if isinstance(output[0], dict) else None
+                    if isinstance(content, list) and content:
+                        text_obj = content[0]
+                        if isinstance(text_obj, dict):
+                            output_text = text_obj.get("text") or text_obj.get("output_text")
                 # legacy chat fallback
-                if not output_text_parts and raw.get("choices"):
-                    maybe = raw["choices"][0]["message"]["content"]
-                    if isinstance(maybe, str):
-                        output_text_parts.append(maybe)
-            output_text = "\n".join(output_text_parts).strip()
+                if not output_text and raw.get("choices"):
+                    output_text = raw["choices"][0]["message"]["content"]
             if not output_text:
                 raise AiExplainerError(f"Empty response content: {raw}")
             payload_json = json.loads(output_text)
