@@ -213,12 +213,12 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         "If the skill tags indicate Writing, emphasize grammar/logic checkpoints; if Reading, spotlight keyword tracking and evidence sentences.\n"
         "Return ONLY the JSON object."
     )
-    # Responses API expects "text" / "image_url" content blocks
-    user_content: List[Dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+    # Responses API expects "input_text" / "input_image" content blocks
+    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
     for figure in figures:
         user_content.append(
             {
-                "type": "image_url",
+                "type": "input_image",
                 "image_url": {"url": figure["image_url"], "detail": "high"},
             }
         )
@@ -280,11 +280,11 @@ def generate_explanation(
     payload = {
         "model": app.config.get("AI_EXPLAINER_MODEL", get_ai_client().default_model),
         "input": [
-            {"role": "system", "content": [{"type": "text", "text": prompt["system_prompt"]}]},
+            {"role": "system", "content": [{"type": "input_text", "text": prompt["system_prompt"]}]},
             {"role": "user", "content": prompt["user_content"]},
         ],
-        # Responses API: JSON output is requested via text.format
-        "text": {"format": "json_object"},
+        # Request JSON output explicitly
+        "output": [{"type": "output_text", "format": "json_object"}],
         "temperature": 0.2,
     }
 
