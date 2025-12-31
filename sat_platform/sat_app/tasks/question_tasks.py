@@ -78,6 +78,17 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     base_questions = max(len(existing_drafts), job.parsed_questions or 0)
     max_page_done = job.processed_pages or 0
     coarse_cache = job.payload_json if isinstance(job.payload_json, list) else []
+    # Determine max page present in coarse cache
+    coarse_max_page = 0
+    for it in coarse_cache:
+        try:
+            pval = it.get("page") or it.get("page_index")
+            if pval is not None:
+                coarse_max_page = max(coarse_max_page, int(pval))
+        except Exception:
+            continue
+    # If coarse pages are already extracted up to processed_pages, skip page extraction on resume
+    pages_done = bool(coarse_cache) and max_page_done >= max(coarse_max_page, 0)
     skip_normalized = base_questions
     if existing_drafts:
         for draft in existing_drafts:
@@ -100,8 +111,8 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     job.current_page = max_page_done
     job.status_message = (
         "Initializing ingestion"
-        if max_page_done == 0
-        else f"Resuming from page {max_page_done + 1}"
+        if max_page_done == 0 and not pages_done
+        else ("Resuming normalization (pages already extracted)" if pages_done else f"Resuming from page {max_page_done + 1}")
     )
     job.last_progress_at = datetime.now(timezone.utc)
     _commit_with_retry()
@@ -146,7 +157,9 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 question_cb=_on_question,
                 job_id=job.id,
                 cancel_event=cancel_event,
-                start_page=max_page_done + 1,
+                # If pages already extracted, skip page loop by setting end_page < start_page
+                start_page=(max_page_done + 1) if not pages_done else (max_page_done + 1),
+                end_page=None if not pages_done else max_page_done,
                 base_pages_completed=max_page_done,
                 base_questions=base_questions,
                 coarse_items=coarse_cache,
