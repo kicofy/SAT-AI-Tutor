@@ -135,12 +135,14 @@ def _current_origin() -> str | None:
 
 def _build_reset_url(token: str) -> str:
     """
-    Build reset URL using a front-end base URL from env.
-    PASSWORD_RESET_URL accepts just the base (e.g. http://3.238.9.209:3000)
-    and we append the reset path automatically (/auth/reset-password).
-    If a path is already present, we respect it and append the reset path.
+    Build reset URL using FRONTEND_BASE_URL (recommended) or fallback PASSWORD_RESET_URL.
+    FRONTEND_BASE_URL can be just the base (e.g. http://3.238.9.209:3000); we append
+    /auth/reset-password automatically. If a path exists, we keep it then append reset path.
     """
-    raw_base = (current_app.config.get("PASSWORD_RESET_URL") or "").strip()
+    raw_base = (
+        (current_app.config.get("FRONTEND_BASE_URL") or "").strip()
+        or (current_app.config.get("PASSWORD_RESET_URL") or "").strip()
+    )
     if not raw_base:
         raw_base = "http://localhost:3000"
 
