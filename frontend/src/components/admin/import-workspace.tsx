@@ -500,6 +500,7 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
       const figureReady = (figureState[draft.id] ?? draft.figure_count ?? 0) > 0;
       if (requiresFigure && !figureReady) {
         setDraftActionMessage("Please capture and upload the chart before publishing.");
+        setDraftPublishId(null);
         return;
       }
       await publishDraft(draft.id);
