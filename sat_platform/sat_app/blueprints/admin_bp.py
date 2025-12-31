@@ -613,6 +613,8 @@ def _prune_stale_jobs(max_age_hours: int = 2, stall_minutes: int = 3):
         QuestionImportJob.query.filter(
             QuestionImportJob.status.in_(("pending", "processing")),
             QuestionImportJob.created_at < age_cutoff,
+            # Do NOT auto-fail jobs that have been resumed recently.
+            QuestionImportJob.last_progress_at < age_cutoff,
         ).all()
     )
     stalled_jobs = (
@@ -628,8 +630,11 @@ def _prune_stale_jobs(max_age_hours: int = 2, stall_minutes: int = 3):
         return
 
     for job in targets.values():
-        job.status = "failed"
         last_progress = _ensure_aware(job.last_progress_at)
+        # If the job has recent progress (>= age_cutoff), skip failing it to allow resume.
+        if last_progress and last_progress >= age_cutoff:
+            continue
+        job.status = "failed"
         if last_progress and last_progress < stall_cutoff:
             job.status_message = (
                 "Paused due to no progress for an extended period. "
