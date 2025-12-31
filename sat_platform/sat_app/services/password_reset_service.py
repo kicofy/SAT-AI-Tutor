@@ -90,12 +90,33 @@ def confirm_password_reset(token: str, new_password: str) -> User:
 def _current_origin() -> str | None:
     """Best-effort origin from the incoming request (honor proxies)."""
     try:
-        # Prefer proxy headers when present
-        proto = request.headers.get("X-Forwarded-Proto") or request.scheme
-        host = request.headers.get("X-Forwarded-Host") or request.host
-        if not host:
-            return None
-        return f"{proto}://{host}".rstrip("/")
+        # 1) Forwarded header (standard)
+        fwd = request.headers.get("Forwarded")
+        if fwd:
+            # format: proto=https;host=example.com
+            parts = dict(
+                entry.strip().split("=", 1)
+                for entry in fwd.replace(";", ",").split(",")
+                if "=" in entry
+            )
+            proto = parts.get("proto")
+            host = parts.get("host")
+            if host:
+                return f"{(proto or request.scheme)}://{host}".rstrip("/")
+
+        # 2) X-Forwarded-*
+        proto = request.headers.get("X-Forwarded-Proto")
+        host = request.headers.get("X-Forwarded-Host")
+        if host:
+            return f"{(proto or request.scheme)}://{host}".rstrip("/")
+
+        # 3) Fallback to Host / url_root
+        host = request.headers.get("Host") or request.host
+        if host:
+            return f"{request.scheme}://{host}".rstrip("/")
+        if request.url_root:
+            return request.url_root.rstrip("/")
+        return None
     except Exception:
         return None
 
