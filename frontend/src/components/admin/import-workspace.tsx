@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { isAxiosError } from "axios";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/app-shell";
 import { DashboardCard } from "@/components/ui/dashboard-card";
 import { FigureCropper } from "@/components/admin/figure-cropper";
@@ -138,6 +138,7 @@ type ImportWorkspaceProps = {
 export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const queryClient = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
   const [uploadState, setUploadState] = useState<"idle" | "uploading">("idle");
   const [jobResult, setJobResult] = useState<unknown>(null);
