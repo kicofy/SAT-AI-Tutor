@@ -48,9 +48,14 @@ def _commit_with_retry(attempts: int = 5, base_delay: float = 0.2) -> None:
         except OperationalError as exc:
             # SQLite lock message commonly contains "database is locked"
             if "locked" not in str(exc).lower():
+                db.session.rollback()
                 raise
             db.session.rollback()
             time.sleep(base_delay * (attempt + 1))
+        except Exception:
+            # Any other failure (e.g., row missing -> expected to update 1 row(s); PendingRollbackError)
+            db.session.rollback()
+            raise
     # final attempt
     db.session.commit()
 
@@ -99,6 +104,9 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
             def _progress(
                 page_idx: int, total_pages: int, normalized_count: int, message: str | None = None
             ) -> None:
+                # if job row was deleted (e.g., cancel/import delete), stop gracefully
+                if not db.session.get(QuestionImportJob, job.id):
+                    raise RuntimeError(f"Job {job.id} no longer exists; aborting ingest.")
                 job.processed_pages = page_idx
                 job.total_pages = total_pages
                 if job.source and total_pages:
@@ -112,10 +120,14 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 job_event_broker.publish({"type": "job", "payload": job.serialize()})
 
             def _persist_coarse(items: list[dict]) -> None:
+                if not db.session.get(QuestionImportJob, job.id):
+                    raise RuntimeError(f"Job {job.id} no longer exists; aborting ingest.")
                 job.payload_json = items
                 _commit_with_retry()
 
             def _on_question(payload: dict) -> None:
+                if not db.session.get(QuestionImportJob, job.id):
+                    raise RuntimeError(f"Job {job.id} no longer exists; aborting ingest.")
                 _save_draft(job, payload)
                 job.parsed_questions += 1
                 _commit_with_retry()
