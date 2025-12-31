@@ -224,6 +224,10 @@ export async function deleteSource(sourceId: number) {
   await api.delete(`/api/admin/sources/${sourceId}`);
 }
 
+export async function deleteSourceForce(sourceId: number) {
+  await api.delete(`/api/admin/sources/${sourceId}/force`);
+}
+
 export async function resumeImportJob(jobId: number) {
   const { data } = await api.post(`/api/admin/questions/imports/${jobId}/resume`);
   return data;

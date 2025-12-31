@@ -22,6 +22,7 @@ import {
   updateGeneralSettings,
   deleteQuestionsBulk,
   deleteSource,
+  deleteSourceForce,
   listAIPaperJobs,
   createAIPaperJob,
   resumeAIPaperJob,
@@ -2036,6 +2037,19 @@ function CollectionsTab({
     },
   });
 
+  const forceDeleteSourceMutation = useMutation({
+    mutationFn: (sourceId: number) => deleteSourceForce(sourceId),
+    onSuccess: () => {
+      setSelectedSourceId(null);
+      setDeleteSourceError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin-sources"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-source-detail"] });
+    },
+    onError: (error: unknown) => {
+      setDeleteSourceError(extractErrorMessage(error, "Failed to force delete collection."));
+    },
+  });
+
   const toggleQuestionSelection = (questionId: number) => {
     setSelectedQuestionIds((prev) =>
         prev.includes(questionId)
@@ -2080,6 +2094,19 @@ function CollectionsTab({
       return;
     }
     deleteSourceMutation.mutate(selectedSourceId);
+  };
+
+  const handleForceDeleteCollection = () => {
+    if (!selectedSourceId) return;
+    const qCount = sourceDetailQuery.data?.source.question_count ?? 0;
+    if (
+      !window.confirm(
+        `Force delete this PDF collection and ALL its ${qCount} question(s) and drafts? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    forceDeleteSourceMutation.mutate(selectedSourceId);
   };
 
   return (
@@ -2191,6 +2218,14 @@ function CollectionsTab({
                     onClick={handleDeleteCollection}
                   >
                     {deleteSourceMutation.isPending ? "Deleting..." : "Delete collection"}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-full border border-red-400/70 px-3 py-1 text-xs font-semibold text-red-100 hover:bg-red-500/10 disabled:opacity-40"
+                    disabled={forceDeleteSourceMutation.isPending}
+                    onClick={handleForceDeleteCollection}
+                  >
+                    {forceDeleteSourceMutation.isPending ? "Force deleting..." : "Force delete"}
                   </button>
                 </div>
               </div>
