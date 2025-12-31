@@ -1195,27 +1195,12 @@ def _normalize_question(
 
 
 def _attach_precomputed_explanations(payload: dict) -> None:
-    # Skip pre-generation when the item depends on cropped figures (main or option images).
-    has_main_figure = bool(payload.get("has_figure"))
-    choice_keys = payload.get("choice_figure_keys") or []
-    if has_main_figure or (isinstance(choice_keys, list) and any(str(k).strip() for k in choice_keys)):
-        return
-    try:
-        explanations = question_explanation_service.generate_explanations_for_payload(payload)
-    except ai_explainer.AiExplainerError as exc:  # pragma: no cover - logging only
-        current_app.logger.warning(
-            "PDF ingest: explanation skipped due to AI error",
-            extra={"error": str(exc), "question_uid": payload.get("question_uid")},
-        )
-        return
-    except Exception:  # pragma: no cover - defensive logging
-        current_app.logger.exception(
-            "PDF ingest: unexpected failure during explanation generation",
-            extra={"question_uid": payload.get("question_uid")},
-        )
-        return
-    if explanations:
-        payload["_ai_explanations"] = explanations
+    """
+    Disabled pre-generation to avoid duplicate explanation calls.
+    Explanation generation now only happens at publish time (per language),
+    preventing the Math/RW prompt from being run twice per language.
+    """
+    return
 
 
 def _sanitize_skill_tags(raw_tags: Any) -> List[str]:
