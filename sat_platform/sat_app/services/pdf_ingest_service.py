@@ -34,6 +34,92 @@ AttemptHook = Callable[
 question_schema = QuestionCreateSchema()
 SKILL_TAG_PROMPT = ", ".join(iter_skill_tags())
 
+MATH_DOMAIN_MAP = (
+    "SAT Math domains: (1) Algebra: linear eq/func, Ax+By=C, systems, inequalities. "
+    "(2) Advanced Math: nonlinear functions/eqs, nonlinear systems, equivalent expressions. "
+    "(3) Problem-Solving & Data Analysis: ratio/unit, percent, single/dual-variable data, probability, sampling/MOE, study design/causality. "
+    "(4) Geometry & Trig: area/volume, lines/angles/triangles, right-triangle & trig, circles."
+)
+MATH_ROUTE_RULES = (
+    "Route selection before solving: "
+    "A) Graph/Desmos when intersection/roots/inequality shading/vertex/solution sets/regression appear, or algebra looks long. "
+    "B) Plug-in options/special values (start with B/C; try 0,1,-1,2,10,100) when options are numeric/expressions or ask which holds. "
+    "C) Formal algebra when the ask is exact value/parameter range/identity/simplified form or mentions exact/in terms of π."
+)
+MATH_MC_RULES = (
+    "MC safety: estimate magnitude/sign to drop absurd options; usually 1–2 obvious eliminations. "
+    "If stuck, plug in options or special values to verify quickly."
+)
+MATH_SPR_RULES = (
+    "SPR (grid-in) rules: no lettered options => treat as fill. Grid allows ≤5 chars for positives (≤6 with leading minus; minus not counted). "
+    "Provide every scoring-equivalent form: exact fractions, simplified radicals, π forms, and short decimals (e.g., 2/3, 0.666, .6666, .6667). "
+    "If fraction too long, offer concise decimal within 4 decimals."
+)
+MATH_SOP = (
+    "Teaching SOP (S1-S6): (1) Restate givens/goal. (2) Classify type/domain. "
+    "(3) Choose strategy (graph vs plug-in vs algebra) and state why. "
+    "(4) Build structure/equations before number-crunching. "
+    "(5) Quick self-check: substitute back / sign & magnitude / domain constraints. "
+    "(6) Takeaway rule for similar problems."
+)
+
+def _build_normalize_system_prompt(section_hint: str | None) -> str:
+    is_math = str(section_hint or "").lower().startswith("math")
+    if is_math:
+        return (
+            "You are an SAT Math normalizer. Convert extracted snippets into the platform JSON schema. "
+            "Return exactly one JSON object with:\n"
+            "- section: \"Math\"; sub_section optional/null.\n"
+            "- passage: ONLY supporting prose; never copy figure/table text. Null if none.\n"
+            "- stem_text: ONLY the interrogative part. Preserve LaTeX/advanced notation ($...$, \\(...\\), $$...$$, "
+            "\\frac, \\sqrt, exponents, subscripts, inequalities, vectors, absolute value | |, summations, limits). Do not simplify.\n"
+            "- choices: object with capital-letter keys. If the page shows no lettered options, set {} (treat as SPR/fill).\n"
+            "- question_type: \"choice\" when valid lettered options exist, otherwise \"fill\" (SPR).\n"
+            "- correct_answer: {\"value\": \"A\"} for MCQ or {\"value\": \"2/3\"} for fill.\n"
+            "- answer_schema (fill only): {\"type\": \"numeric\"|\"text\", \"acceptable\": [...], \"tolerance\": number|null, "
+            "\"allow_fraction\": true, \"allow_pi\": true, \"strip_spaces\": true}. List EVERY scoring-equivalent form within grid rules "
+            "(≤5 chars; decimal point counts; leading minus does not). Include fraction + short decimals (e.g., 2/3, 0.666, .6666, .6667) and π/radical forms if applicable.\n"
+            "- has_figure: true if passage/stem relies on a figure/table/image (not options). choice_figure_keys: letters whose option has its own figure; else [].\n"
+            "- difficulty_level: 1-5 with difficulty_assessment {\"level\":3,\"expected_time_sec\":75,\"rationale\":\"...\"}.\n"
+            f"- skill_tags: up to TWO from: {SKILL_TAG_PROMPT}; [] if unsure (prefer Math domains). {MATH_DOMAIN_MAP}\n"
+            "- metadata: include source_question_number if available; no legacy fields.\n"
+            f"{MATH_ROUTE_RULES} {MATH_MC_RULES} {MATH_SPR_RULES}\n"
+            "Rules: Do NOT hallucinate. Do NOT copy figure data. Return JSON only."
+        )
+    return (
+        "You are an SAT Reading & Writing normalizer. Convert extracted snippets into the canonical JSON schema. "
+        "Return exactly one JSON object with:\n"
+        "- section: \"RW\"; sub_section optional/null.\n"
+        "- passage: ONLY supporting prose; do NOT copy tables/figures or the question sentence. Null if none.\n"
+        "- stem_text: ONLY the interrogative part (e.g., \"Which choice ...?\").\n"
+        "- choices: object with capital-letter keys. If no valid lettered options exist, set {} and question_type must be \"fill\".\n"
+        "- question_type: \"choice\" for MCQ else \"fill\".\n"
+        "- correct_answer: {\"value\": \"A\"} for MCQ or {\"value\": \"text\"} for fill.\n"
+        "- answer_schema (fill only): {\"type\": \"text\"|\"numeric\", \"acceptable\": [...], \"tolerance\": number|null, "
+        "\"allow_fraction\": true, \"allow_pi\": true, \"strip_spaces\": true}. Include all scoring-equivalent forms if known.\n"
+        "- has_figure: true if passage/stem references a figure/table/image (not options). choice_figure_keys: letters whose option contains its own figure/table; else [].\n"
+        "- difficulty_level 1-5 with difficulty_assessment; keep concise rationale.\n"
+        f"- skill_tags: up to TWO from: {SKILL_TAG_PROMPT}; [] if unsure.\n"
+        "- metadata: include source_question_number if available; no legacy fields.\n"
+        "Rules: Do NOT hallucinate. Do NOT copy figure contents. Return JSON only."
+    )
+
+
+def _build_solver_system_prompt(section_hint: str | None) -> str:
+    is_math = str(section_hint or "").lower().startswith("math")
+    if is_math:
+        return (
+            "You are an SAT Math solving assistant. Determine the single best answer choice.\n"
+            f"{MATH_ROUTE_RULES} {MATH_MC_RULES}\n"
+            "Return JSON: {\"answer_value\": \"A\", \"solution\": \"step-by-step reasoning\"}. "
+            "Keep exact symbolic forms when needed; answer_value must be one of the provided choice letters."
+        )
+    return (
+        "You are an SAT Reading & Writing solving assistant. Choose the best answer based on evidence, logic, and clarity. "
+        "Highlight why the selected option fits and others fail (unsupported, scope shift, grammar/clarity issues). "
+        "Return JSON: {\"answer_value\": \"A\", \"solution\": \"brief reasoning\"}. answer_value must be one of the provided choice letters."
+    )
+
 # ---------------- Rate limiting (best-effort, client-side) ----------------
 _rate_lock = threading.Lock()
 _rate_window_minute: dict[str, deque] = defaultdict(deque)
@@ -429,30 +515,8 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
 
 
 def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
-    system_prompt = (
-        "You are an SAT content normalizer. Convert extracted question snippets into the canonical JSON schema. "
-        "Respond with **only one JSON object** containing:\n"
-        "- section: \"RW\" or \"Math\".\n"
-        "- sub_section: optional string or null.\n"
-        "- passage: ONLY the supporting prose; do NOT copy figure/table titles or question text. Null if none.\n"
-        "- stem_text: ONLY the interrogative part (e.g., \"Which choice ...?\"); do not restate figures/tables; keep math notation "
-        "($...$, \\(...\\), $$...$$) unescaped and fully expressed (\\frac, \\sqrt, exponents, subscripts, inequalities, "
-        "absolute value | |, vectors, summations, limits). Do NOT simplify to decimals; preserve symbolic forms and parentheses.\n"
-        "- choices: object with capital letter keys (A,B,...) and choice texts. Preserve advanced math notation exactly as written "
-        "(fractions, radicals, powers, subscripts, pi, inequalities). If not multiple-choice, use {}.\n"
-        "- question_type: \"choice\" if valid lettered choices exist, otherwise \"fill\" (SPR).\n"
-        "- correct_answer: {\"value\": \"A\"} for MCQ or {\"value\": \"3.5\"} for fill.\n"
-        "- answer_schema (fill only): {\"type\": \"numeric\"|\"text\", \"acceptable\": [...], \"tolerance\": number|null, "
-        "\"allow_fraction\": true, \"allow_pi\": true, \"strip_spaces\": true}. List every scoring-equivalent form (fractions/decimals/pi, simplified). "
-        "SAT grid-in: each acceptable <=5 chars (decimal point counts; leading minus not counted).\n"
-        "- has_figure: true if passage/stem relies on a figure/table/image (not options).\n"
-        "- choice_figure_keys: array of choice letters whose own option contains a figure/table. If none, [].\n"
-        "- difficulty_level: integer 1-5, and difficulty_assessment object like {\"level\":3,\"expected_time_sec\":75,\"rationale\":\"...\"}.\n"
-        "- skill_tags: up to TWO from this allowed list: "
-        f"{SKILL_TAG_PROMPT}. Return [] if unsure.\n"
-        "- metadata: include source_question_number if available. Do NOT include legacy fields.\n"
-        "Rules: Do NOT hallucinate. Do NOT copy figure data into text. Preserve math symbols; do not rewrite LaTeX to plain words. Return JSON only."
-    )
+    section = item.get("section") or ""
+    system_prompt = _build_normalize_system_prompt(section)
     passage = item.get("passage") or ""
     # Fallback to stem_text when prompt is absent to avoid empty normalization input
     prompt_text = item.get("prompt") or item.get("stem_text") or ""
@@ -564,11 +628,7 @@ def _solve_choice_answer(normalized: dict, raw_item: dict, *, job_id: int | None
     choices = normalized.get("choices") or {}
     if not choices:
         return None
-    system_prompt = (
-        "You are an SAT solving assistant. Determine the single best answer choice.\n"
-        'Return JSON: {"answer_value": "A", "solution": "step-by-step reasoning"}.\n'
-        "answer_value must be one of the provided choice letters."
-    )
+    system_prompt = _build_solver_system_prompt(normalized.get("section") or raw_item.get("section"))
     passage = normalized.get("passage") or {}
     passage_text = passage.get("content_text") if isinstance(passage, dict) else ""
     stem_text = normalized.get("stem_text") or raw_item.get("prompt") or ""
@@ -972,30 +1032,7 @@ def _normalize_question(
     ] = None,
     job_id: int | None = None,
 ) -> dict:
-    system_prompt = (
-        "You are an SAT content normalizer. Convert extracted question snippets into the canonical "
-        "JSON schema used by the SAT AI Tutor platform. Output MUST be a single JSON object with:\n"
-        "- section: \"RW\" or \"Math\".\n"
-        "- sub_section: optional string or null.\n"
-        "- passage: ONLY the supporting narrative text (introductory paragraphs). Do NOT include chart/table contents, figure titles, or the question sentence. Leave as null if no prose passage exists.\n"
-        "- stem_text: ONLY the interrogative portion (e.g., \"Which choice ...?\"). Never prepend the passage or restate figure/table data verbatim. Preserve math notation in LaTeX form; allow inline $...$ or \\(...\\) and block $$...$$ without escaping backslashes.\n"
-        "- choices: object whose keys are capital letters (A,B,C,...) and values are choice texts. If the item is NOT multiple-choice, set choices to {}.\n"
-        "- question_type: \"choice\" for multiple-choice, \"fill\" for student-produced response (SPR). If there are no valid lettered choices, default to \"fill\".\n"
-        "- correct_answer: object like {\"value\": \"A\"} for MCQ, or {\"value\": \"3.5\"} for fill.\n"
-        "- answer_schema: for fill questions, include a dict: {\"type\": \"numeric\" or \"text\", \"acceptable\": [...], \"tolerance\": number|null, \"allow_fraction\": true, \"allow_pi\": true, \"strip_spaces\": true}. **List EVERY scoring-equivalent form** (fractions, decimals, π forms, simplified radicals, sign variants when applicable). If only a canonical value is known, still place it in acceptable.\n"
-        "  SAT grid-in length rule: each acceptable answer must be ≤5 characters; decimal point counts; leading minus sign does NOT count. Prefer exact/simplified fractions or terminating decimals that fit; for repeating decimals, provide a rounded form within 5 chars.\n"
-        "- has_figure: boolean for figures/tables that belong to the passage/stem (not the answer options).\n"
-        "- choice_figure_keys: array of choice letters that rely on their OWN figure/table/image inside the option. Use uppercase letters. If no option has its own figure, return an empty array. Do NOT set has_figure just because an option contains a figure; use choice_figure_keys instead.\n"
-        "- difficulty_level: integer 1-5. "
-        "Use the rubric below and also provide a difficulty_assessment object describing reasoning and expected_time_sec.\n"
-        "- skill_tags: choose up to TWO entries from this canonical list only: "
-        f"{SKILL_TAG_PROMPT}. Return an empty array if unsure.\n"
-        "- metadata: optional dict for provenance info.\n"
-        "Do NOT include legacy fields such as prompt, metadata_json, or explanations. Respond with JSON only.\n"
-        f"{difficulty_prompt_block()}\n"
-        "difficulty_assessment must be shaped like "
-        '{"level":3,"expected_time_sec":75,"rationale":"Two-step evidence match."}'
-    )
+    system_prompt = _build_normalize_system_prompt(question_payload.get("section"))
     schema_hint = ""
     user_prompt = json.dumps(question_payload, ensure_ascii=False, indent=2)
     payload = {
@@ -1248,11 +1285,7 @@ def _solve_question_with_ai(
     model_name = app.config.get("AI_PDF_SOLVER_MODEL") or app.config.get(
         "AI_PDF_NORMALIZE_MODEL", "gpt-5.1"
     )
-    system_prompt = (
-        "You are an SAT solving assistant. Determine the single best answer choice.\n"
-        "Respond with pure JSON: {\"answer_value\": \"A\", \"solution\": \"step-by-step reasoning\"}.\n"
-        "The answer_value must be one of the provided choice letters. Be concise but complete."
-    )
+    system_prompt = _build_solver_system_prompt(normalized_question.get("section") or question_payload.get("section"))
     passage = normalized_question.get("passage", {}) or {}
     passage_text = passage.get("content_text") if isinstance(passage, dict) else ""
     stem_text = normalized_question.get("stem_text") or question_payload.get("prompt") or ""
