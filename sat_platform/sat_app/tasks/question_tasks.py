@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from ..extensions import db
 from ..models import QuestionImportJob, QuestionDraft
@@ -52,12 +53,19 @@ def _commit_with_retry(attempts: int = 5, base_delay: float = 0.2) -> None:
                 raise
             db.session.rollback()
             time.sleep(base_delay * (attempt + 1))
+        except ObjectDeletedError:
+            db.session.rollback()
+            raise
         except Exception:
             # Any other failure (e.g., row missing -> expected to update 1 row(s); PendingRollbackError)
             db.session.rollback()
             raise
     # final attempt
     db.session.commit()
+
+
+def _job_exists(job_id: int) -> bool:
+    return db.session.get(QuestionImportJob, job_id) is not None
 
 
 def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
@@ -105,8 +113,8 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 page_idx: int, total_pages: int, normalized_count: int, message: str | None = None
             ) -> None:
                 # if job row was deleted (e.g., cancel/import delete), stop gracefully
-                if not db.session.get(QuestionImportJob, job.id):
-                    raise RuntimeError(f"Job {job.id} no longer exists; aborting ingest.")
+                if not _job_exists(job.id):
+                    raise ObjectDeletedError(f"Job {job.id} no longer exists; aborting ingest.", None, None)
                 job.processed_pages = page_idx
                 job.total_pages = total_pages
                 if job.source and total_pages:
@@ -120,14 +128,14 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 job_event_broker.publish({"type": "job", "payload": job.serialize()})
 
             def _persist_coarse(items: list[dict]) -> None:
-                if not db.session.get(QuestionImportJob, job.id):
-                    raise RuntimeError(f"Job {job.id} no longer exists; aborting ingest.")
+                if not _job_exists(job.id):
+                    raise ObjectDeletedError(f"Job {job.id} no longer exists; aborting ingest.", None, None)
                 job.payload_json = items
                 _commit_with_retry()
 
             def _on_question(payload: dict) -> None:
-                if not db.session.get(QuestionImportJob, job.id):
-                    raise RuntimeError(f"Job {job.id} no longer exists; aborting ingest.")
+                if not _job_exists(job.id):
+                    raise ObjectDeletedError(f"Job {job.id} no longer exists; aborting ingest.", None, None)
                 _save_draft(job, payload)
                 job.parsed_questions += 1
                 _commit_with_retry()
@@ -161,14 +169,20 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
         job.status = "completed"
         job.status_message = "Completed"
         job.error_message = None
+    except ObjectDeletedError:
+        db.session.rollback()
+        return job
     except Exception as exc:  # pragma: no cover
         job.status = "failed"
         job.error_message = str(exc)
         job.status_message = f"Failed: {exc}"
     finally:
-        job.last_progress_at = datetime.now(timezone.utc)
-        _commit_with_retry()
-        job_event_broker.publish({"type": "job", "payload": job.serialize()})
+        if _job_exists(job.id):
+            job.last_progress_at = datetime.now(timezone.utc)
+            _commit_with_retry()
+            job_event_broker.publish({"type": "job", "payload": job.serialize()})
+        else:
+            db.session.rollback()
     return job
 
 
