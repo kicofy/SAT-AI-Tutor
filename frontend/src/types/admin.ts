@@ -67,12 +67,14 @@ export type AdminQuestion = {
   question_uid?: string | null;
   section: string;
   sub_section?: string | null;
+  question_type?: string | null;
   passage?: QuestionPassage | null;
   difficulty_level?: number | null;
   stem_text?: string | null;
   skill_tags?: string[];
   choices?: Record<string, string>;
   correct_answer?: { value?: string | null } | null;
+  answer_schema?: Record<string, unknown> | null;
   estimated_time_sec?: number | null;
   irt_a?: number | null;
   irt_b?: number | null;

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { isAxiosError } from "axios";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/app-shell";
 import { DashboardCard } from "@/components/ui/dashboard-card";
 import { FigureCropper } from "@/components/admin/figure-cropper";
@@ -50,6 +50,7 @@ type DraftPayloadPreview = {
   has_figure?: boolean;
   section?: string | null;
   sub_section?: string | null;
+  question_type?: string | null;
   difficulty_level?: number | null;
   correct_answer?: { value?: string | null } | null;
   choices?:
@@ -63,6 +64,7 @@ type DraftPayloadPreview = {
       }
     | null;
   skill_tags?: string[];
+  answer_schema?: Record<string, unknown> | null;
   estimated_time_sec?: number | null;
   irt_a?: number | null;
   irt_b?: number | null;
@@ -97,7 +99,7 @@ type DraftPreview = {
 
 type FigureModalState = {
   draft: DraftPreview;
-  source?: FigureSource;
+  source?: FigureRecord;
   selection: SelectionRect | null;
   zoom: number;
   loading: boolean;
@@ -109,6 +111,18 @@ type DuplicatePromptState = {
   file: File;
   filename: string;
   existing?: AdminSource | null;
+};
+
+type FigureRecord = FigureSource & {
+  id?: number;
+  description?: string | null;
+  bbox?: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+  } | null;
+  url?: string | null;
 };
 
 type OpenAILogEntry = {
@@ -138,6 +152,7 @@ type ImportWorkspaceProps = {
 export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const queryClient = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
   const [uploadState, setUploadState] = useState<"idle" | "uploading">("idle");
   const [jobResult, setJobResult] = useState<unknown>(null);
@@ -533,15 +548,16 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
           fetchDraftFigureSource(draft.id),
           fetchDraftFigures(draft.id).catch(() => ({ figures: [] })),
         ]);
-        const figures: FigureSource[] = Array.isArray(figuresResponse?.figures)
-          ? (figuresResponse.figures as FigureSource[])
+        const figures: FigureRecord[] = Array.isArray(figuresResponse?.figures)
+          ? (figuresResponse.figures as FigureRecord[])
           : [];
+        const sourceRecord: FigureRecord | undefined = source ? { ...source } : undefined;
         const existingFigure =
           kind === "choice"
             ? (() => {
                 const cid = (choiceId || "").toLowerCase();
                 if (!cid) return undefined;
-                return figures.find((fig: FigureSource) =>
+                return figures.find((fig) =>
                   typeof fig.description === "string"
                     ? fig.description.toLowerCase().includes(`choice ${cid}`)
                     : false
@@ -549,29 +565,30 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
               })()
             : (() => {
                 const nonChoice = figures.find(
-                  (fig: FigureSource) =>
+                  (fig) =>
                     !(typeof fig.description === "string" && fig.description.toLowerCase().includes("choice"))
                 );
                 return nonChoice || figures[0];
               })();
-        const existingSelection =
+        const hasBbox =
           existingFigure?.bbox &&
           typeof existingFigure.bbox === "object" &&
           typeof existingFigure.bbox.width === "number" &&
-          typeof existingFigure.bbox.height === "number"
-            ? {
-                x: Number(existingFigure.bbox.x ?? 0),
-                y: Number(existingFigure.bbox.y ?? 0),
-                width: Math.max(1, Number(existingFigure.bbox.width)),
-                height: Math.max(1, Number(existingFigure.bbox.height)),
-              }
-            : null;
-        if (existingFigure?.url) {
+          typeof existingFigure.bbox.height === "number";
+        const existingSelection = hasBbox
+          ? {
+              x: Number(existingFigure?.bbox?.x ?? 0),
+              y: Number(existingFigure?.bbox?.y ?? 0),
+              width: Math.max(1, Number(existingFigure?.bbox?.width)),
+              height: Math.max(1, Number(existingFigure?.bbox?.height)),
+            }
+          : null;
+        if (existingFigure && typeof existingFigure.url === "string") {
           setFigurePreviewUrl(existingFigure.url);
         }
         setFigureModal((prev) =>
           prev && prev.draft.id === draft.id
-            ? { ...prev, source, selection: existingSelection, loading: false }
+            ? { ...prev, source: sourceRecord, selection: existingSelection, loading: false }
             : prev
         );
       } catch (error: unknown) {
@@ -1331,11 +1348,21 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                {quickTestDraft.payload?.passage?.content_text ? (
+                {(() => {
+                  const passage = quickTestDraft.payload?.passage;
+                  const passageText =
+                    typeof passage === "string"
+                      ? passage
+                      : passage && typeof passage === "object"
+                        ? passage.content_text || ""
+                        : "";
+                  if (!passageText) return null;
+                  return (
                   <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
-                    {quickTestDraft.payload.passage.content_text}
+                      {passageText}
                   </div>
-                ) : null}
+                  );
+                })()}
                 <div className="text-white text-base font-semibold">
                   {quickTestDraft.payload?.stem_text || "No stem"}
                 </div>
@@ -1438,11 +1465,21 @@ export function ImportWorkspace({ variant = "standalone" }: ImportWorkspaceProps
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-4">
-              {quickTestDraft.payload?.passage?.content_text ? (
-                <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
-                  {quickTestDraft.payload.passage.content_text}
-                </div>
-              ) : null}
+                {(() => {
+                  const passage = quickTestDraft.payload?.passage;
+                  const passageText =
+                    typeof passage === "string"
+                      ? passage
+                      : passage && typeof passage === "object"
+                        ? passage.content_text || ""
+                        : "";
+                  if (!passageText) return null;
+                  return (
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
+                      {passageText}
+                    </div>
+                  );
+                })()}
               <div className="text-white text-base font-semibold">
                 {quickTestDraft.payload?.stem_text || "No stem"}
               </div>
