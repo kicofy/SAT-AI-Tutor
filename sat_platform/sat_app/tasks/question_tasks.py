@@ -73,9 +73,9 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     if not job:
         raise ValueError(f"Job {job_id} not found")
     job_id_int = job.id  # stable id to avoid expired attribute access after delete
-    # Resume-aware: use already normalized drafts as the source of truth.
+    # Resume-aware: use already normalized drafts as the single source of truth.
     existing_drafts = list(job.drafts)
-    base_questions = len(existing_drafts)
+    normalized_count = len(existing_drafts)
     max_page_done = job.processed_pages or 0
     coarse_cache = job.payload_json if isinstance(job.payload_json, list) else []
     # Determine max page present in coarse cache
@@ -87,23 +87,26 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 coarse_max_page = max(coarse_max_page, int(pval))
         except Exception:
             continue
+    # Determine max page from existing drafts (normalized questions)
+    max_page_from_drafts = 0
+    for draft in existing_drafts:
+        try:
+            payload_page = draft.payload.get("source_page") or draft.payload.get("page")
+            if payload_page is not None:
+                max_page_from_drafts = max(max_page_from_drafts, int(payload_page))
+        except Exception:
+            continue
+    max_page_done = max(max_page_done, max_page_from_drafts)
     # If coarse pages are already extracted up to processed_pages, skip page extraction on resume
     pages_done = bool(coarse_cache) and max_page_done >= max(coarse_max_page, 0)
-    skip_normalized = base_questions
-    if existing_drafts:
-        for draft in existing_drafts:
-            try:
-                payload_page = draft.payload.get("source_page") or draft.payload.get("page")
-                if payload_page is not None:
-                    max_page_done = max(max_page_done, int(payload_page))
-            except Exception:
-                continue
+    skip_normalized = normalized_count
+    base_questions = normalized_count
 
     job.status = "processing"
     job.error_message = None
     job.processed_pages = max_page_done
     job.total_pages = job.total_pages or 0
-    job.parsed_questions = base_questions
+    job.parsed_questions = normalized_count
     job.current_page = max_page_done
     job.status_message = (
         "Initializing ingestion"
