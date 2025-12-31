@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from flask import current_app, render_template
+from flask import current_app, render_template, request
 from werkzeug.exceptions import BadRequest
 
 from ..extensions import db
@@ -87,13 +87,37 @@ def confirm_password_reset(token: str, new_password: str) -> User:
     return user
 
 
-def _send_reset_email(user: User, token: str) -> None:
-    base_url = current_app.config.get(
-        "PASSWORD_RESET_URL",
-        "http://localhost:3000/auth/reset-password",
-    )
+def _current_origin() -> str | None:
+    """Best-effort origin from the incoming request (honor proxies)."""
+    try:
+        # Prefer proxy headers when present
+        proto = request.headers.get("X-Forwarded-Proto") or request.scheme
+        host = request.headers.get("X-Forwarded-Host") or request.host
+        if not host:
+            return None
+        return f"{proto}://{host}".rstrip("/")
+    except Exception:
+        return None
+
+
+def _build_reset_url(token: str) -> str:
+    cfg_url = (current_app.config.get("PASSWORD_RESET_URL") or "").strip()
+    origin = _current_origin()
+    default_path = "/auth/reset-password"
+    if cfg_url:
+        # If config already includes scheme, trust it; otherwise treat as path.
+        if cfg_url.startswith(("http://", "https://")):
+            base_url = cfg_url
+        else:
+            base_url = f"{origin or ''}/{cfg_url.lstrip('/')}" if origin else f"http://localhost:3000{default_path}"
+    else:
+        base_url = f"{origin or 'http://localhost:3000'}{default_path}"
     separator = "&" if "?" in base_url else "?"
-    reset_link = f"{base_url}{separator}{urlencode({'token': token})}"
+    return f"{base_url}{separator}{urlencode({'token': token})}"
+
+
+def _send_reset_email(user: User, token: str) -> None:
+    reset_link = _build_reset_url(token)
     language = _resolve_language(user)
     context = {
         "name": (user.username or user.email.split("@")[0]).split()[0],
