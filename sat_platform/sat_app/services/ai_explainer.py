@@ -287,6 +287,39 @@ def generate_explanation(
             {"id": "page", "description": "page_image", "image_url": page_img.strip()},
         )
 
+    # Deduplicate and limit images to keep latency down and avoid over-sending.
+    deduped: List[Dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for fig in collected_figures:
+        url = fig.get("image_url")
+        if isinstance(url, dict):
+            url = url.get("url") or url.get("data") or url.get("image_url")
+        if not isinstance(url, str):
+            continue
+        url = url.strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        fig = dict(fig)
+        fig["image_url"] = url
+        deduped.append(fig)
+
+    # Always prefer the page image first; cap the total images.
+    max_images = int(current_app.config.get("AI_EXPLAINER_MAX_IMAGES", 2))
+    if max_images <= 0:
+        max_images = len(deduped) or 1
+    page_first: List[Dict[str, Any]] = []
+    page_fig = next((f for f in deduped if f.get("id") == "page"), None)
+    if page_fig:
+        page_first.append(page_fig)
+    for fig in deduped:
+        if fig is page_fig:
+            continue
+        if len(page_first) >= max_images:
+            break
+        page_first.append(fig)
+    collected_figures = page_first
+
     prompt = _build_messages(question, user_answer, user_language, depth, collected_figures)
 
     payload = {
@@ -296,7 +329,7 @@ def generate_explanation(
             {"role": "user", "content": prompt["user_content"]},
         ],
         # Structured outputs per Responses API: use text.format, not response_format.
-        "text": {"format": {"type": "json_object"}},  # ✅ format 是 object
+        "text": {"format": "json_object"},
         "temperature": 0.2,
     }
 
