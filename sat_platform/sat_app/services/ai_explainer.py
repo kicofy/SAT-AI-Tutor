@@ -213,15 +213,13 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         "If the skill tags indicate Writing, emphasize grammar/logic checkpoints; if Reading, spotlight keyword tracking and evidence sentences.\n"
         "Return ONLY the JSON object."
     )
-    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
+    # Responses API expects "text" / "image_url" content blocks
+    user_content: List[Dict[str, Any]] = [{"type": "text", "text": user_prompt}]
     for figure in figures:
         user_content.append(
             {
-                "type": "input_image",
-                "image_url": {
-                    "url": figure["image_url"],
-                    "detail": "high",
-                },
+                "type": "image_url",
+                "image_url": {"url": figure["image_url"], "detail": "high"},
             }
         )
     return {
@@ -282,9 +280,10 @@ def generate_explanation(
     payload = {
         "model": app.config.get("AI_EXPLAINER_MODEL", get_ai_client().default_model),
         "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": prompt["system_prompt"]}]},
+            {"role": "system", "content": [{"type": "text", "text": prompt["system_prompt"]}]},
             {"role": "user", "content": prompt["user_content"]},
         ],
+        "response_format": {"type": "json_object"},
         "temperature": 0.2,
     }
 
@@ -312,7 +311,12 @@ def generate_explanation(
                 json=payload,
                 timeout=(connect_timeout, read_timeout),
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                # Log response body to aid debugging of 400s
+                app.logger.warning(
+                    "AI explainer HTTP error %s: %s", response.status_code, response.text[:500]
+                )
+                response.raise_for_status()
             raw = response.json()
             output_text = None
             if isinstance(raw, dict):
