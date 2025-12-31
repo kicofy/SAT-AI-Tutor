@@ -109,6 +109,8 @@ class _PayloadQuestion:
         self.correct_answer = payload.get("correct_answer") or {}
         self.skill_tags = payload.get("skill_tags") or []
         self.metadata_json = payload.get("metadata") or payload.get("metadata_json") or {}
+        if not isinstance(self.metadata_json, dict):
+            self.metadata_json = {}
         self.has_figure = bool(payload.get("has_figure"))
         self.page_image_b64 = None
         meta_img = self.metadata_json.get("page_image_b64")

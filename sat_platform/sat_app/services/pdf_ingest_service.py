@@ -1162,8 +1162,15 @@ def _normalize_question(
         data["passage"] = None
     data["skill_tags"] = _sanitize_skill_tags(data.get("skill_tags"))
     normalized = question_schema.load(data)
+    # Normalize metadata container early to avoid None-type item assignment later.
+    metadata = normalized.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    normalized["metadata"] = metadata
     if difficulty_assessment:
         metadata = normalized.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
         metadata["difficulty_assessment"] = difficulty_assessment
         normalized["metadata"] = metadata
         expected_time = difficulty_assessment.get("expected_time_sec")
@@ -1172,6 +1179,8 @@ def _normalize_question(
     decorations = _extract_decorations(question_payload)
     if decorations:
         metadata = normalized.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
         metadata["decorations"] = decorations
         normalized["metadata"] = metadata
     solver_result = None
