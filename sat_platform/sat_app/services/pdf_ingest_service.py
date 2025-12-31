@@ -202,9 +202,16 @@ def ingest_pdf_document(
                 f"Coarse total: {len(cached_items)} after page {idx}",
             )
 
+    # Drop already normalized items to avoid reprocessing when cache contains earlier pages.
+    if skip_normalized_count > 0 and cached_items:
+        if skip_normalized_count >= len(cached_items):
+            cached_items = []
+        else:
+            cached_items = cached_items[skip_normalized_count:]
+
     enriched: List[dict] = []
     total = len(cached_items)
-    start_idx = max(0, skip_normalized_count)
+    start_idx = 0  # after trimming, always start from 0
     for i, item in enumerate(cached_items[start_idx:], start=start_idx + 1):
         if cancel_event and cancel_event.is_set():
             break
