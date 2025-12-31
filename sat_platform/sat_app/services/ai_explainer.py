@@ -215,6 +215,7 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
     )
     # Responses API expects "input_text" / "input_image" content blocks
     user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
+    seen_images = set()
     for figure in figures:
         url = figure.get("image_url")
         # The Responses API expects image_url to be a string (URL or data URL).
@@ -224,8 +225,9 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         if not isinstance(url, str):
             continue
         url = url.strip()
-        if not url:
+        if not url or url in seen_images:
             continue
+        seen_images.add(url)
         user_content.append(
             {
                 "type": "input_image",
