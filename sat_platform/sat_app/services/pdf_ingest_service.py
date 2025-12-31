@@ -181,8 +181,9 @@ def ingest_pdf_document(
 
     cached_items: List[dict] = list(coarse_items or [])
     pages = _extract_pages_seq(path, start_page=start_page, end_page=end_page, progress_cb=progress_cb)
+    total_pages_span = base_pages_completed + len(pages)
     if progress_cb:
-        progress_cb(base_pages_completed, len(pages), base_questions, "Starting PDF ingestion")
+        progress_cb(base_pages_completed, total_pages_span, base_questions, "Starting PDF ingestion")
     for p in pages:
         idx = p["page_index"]
         coarse = _extract_coarse_questions(p, job_id=job_id)
@@ -196,8 +197,8 @@ def ingest_pdf_document(
         if progress_cb:
             progress_cb(
                 idx,
-                len(pages),
-                base_questions + len(cached_items),
+                total_pages_span,
+                base_questions,
                 f"Coarse total: {len(cached_items)} after page {idx}",
             )
 
@@ -215,7 +216,7 @@ def ingest_pdf_document(
         if progress_cb:
             progress_cb(
                 item.get("page_index", 0),
-                len(pages),
+                total_pages_span,
                 base_questions + len(enriched),
                 f"Normalized {i}/{total}",
             )
