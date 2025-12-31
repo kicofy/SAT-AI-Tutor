@@ -293,8 +293,9 @@ def generate_explanation(
             {"role": "system", "content": [{"type": "input_text", "text": prompt["system_prompt"]}]},
             {"role": "user", "content": prompt["user_content"]},
         ],
-        # Request JSON output explicitly
-        "output": [{"type": "output_text", "format": "json_object"}],
+        "text": {  # ✅ Responses API 的结构化输出入口
+            "format": {"type": "json_object"}
+        },
         "temperature": 0.2,
     }
 
