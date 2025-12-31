@@ -134,17 +134,20 @@ def _current_origin() -> str | None:
 
 
 def _build_reset_url(token: str) -> str:
+    """
+    Build reset URL using a fixed front-end base from configuration.
+    Set PASSWORD_RESET_URL in environment (absolute URL), e.g.:
+      PASSWORD_RESET_URL=https://app.example.com/auth/reset-password
+    Fallback is localhost.
+    """
     cfg_url = (current_app.config.get("PASSWORD_RESET_URL") or "").strip()
-    origin = _current_origin()
-    default_path = "/auth/reset-password"
-    if cfg_url:
-        # If config already includes scheme, trust it; otherwise treat as path.
-        if cfg_url.startswith(("http://", "https://")):
-            base_url = cfg_url
-        else:
-            base_url = f"{origin or ''}/{cfg_url.lstrip('/')}" if origin else f"http://localhost:3000{default_path}"
+    if not cfg_url:
+        base_url = "http://localhost:3000/auth/reset-password"
     else:
-        base_url = f"{origin or 'http://localhost:3000'}{default_path}"
+        base_url = cfg_url
+        if not base_url.startswith(("http://", "https://")):
+            # If admin configured a host without scheme, assume http.
+            base_url = f"http://{base_url.lstrip('/')}"
     separator = "&" if "?" in base_url else "?"
     return f"{base_url}{separator}{urlencode({'token': token})}"
 
