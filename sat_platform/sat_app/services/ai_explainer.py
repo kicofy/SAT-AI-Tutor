@@ -283,7 +283,8 @@ def generate_explanation(
             {"role": "system", "content": [{"type": "text", "text": prompt["system_prompt"]}]},
             {"role": "user", "content": prompt["user_content"]},
         ],
-        "response_format": {"type": "json_object"},
+        # Responses API: JSON output is requested via text.format
+        "text": {"format": "json_object"},
         "temperature": 0.2,
     }
 
