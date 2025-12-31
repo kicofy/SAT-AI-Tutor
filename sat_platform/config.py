@@ -113,7 +113,8 @@ class BaseConfig:
     MAIL_IMAP_SERVER = os.getenv("MAIL_IMAP_SERVER", "imappro.zoho.com")
     MAIL_IMAP_PORT = int(os.getenv("MAIL_IMAP_PORT", "993"))
     MAIL_IMAP_USE_SSL = os.getenv("MAIL_IMAP_USE_SSL", "true").lower() in {"1", "true", "yes"}
-    PASSWORD_RESET_URL = os.getenv("PASSWORD_RESET_URL", "http://localhost:3000/auth/reset-password")
+    # Frontend base URL used for building email links (reset password, etc.)
+    FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
     SQLITE_TIMEOUT_SEC = int(os.getenv("SQLITE_TIMEOUT_SEC", "15"))
     SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "15000"))
     if SQLALCHEMY_DATABASE_URI.startswith("sqlite"):

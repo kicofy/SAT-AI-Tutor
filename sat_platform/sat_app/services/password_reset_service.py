@@ -135,19 +135,30 @@ def _current_origin() -> str | None:
 
 def _build_reset_url(token: str) -> str:
     """
-    Build reset URL using a fixed front-end base from configuration.
-    Set PASSWORD_RESET_URL in environment (absolute URL), e.g.:
-      PASSWORD_RESET_URL=https://app.example.com/auth/reset-password
-    Fallback is localhost.
+    Build reset URL using a front-end base URL from env.
+    PASSWORD_RESET_URL accepts just the base (e.g. http://3.238.9.209:3000)
+    and we append the reset path automatically (/auth/reset-password).
+    If a path is already present, we respect it and append the reset path.
     """
-    cfg_url = (current_app.config.get("PASSWORD_RESET_URL") or "").strip()
-    if not cfg_url:
-        base_url = "http://localhost:3000/auth/reset-password"
-    else:
-        base_url = cfg_url
-        if not base_url.startswith(("http://", "https://")):
-            # If admin configured a host without scheme, assume http.
-            base_url = f"http://{base_url.lstrip('/')}"
+    raw_base = (current_app.config.get("PASSWORD_RESET_URL") or "").strip()
+    if not raw_base:
+        raw_base = "http://localhost:3000"
+
+    # Ensure scheme exists
+    if not raw_base.startswith(("http://", "https://")):
+        raw_base = f"http://{raw_base.lstrip('/')}"
+
+    parsed = urlparse(raw_base)
+    scheme = parsed.scheme or "http"
+    netloc = parsed.netloc or parsed.path  # handle cases like "example.com:3000"
+    path = parsed.path if parsed.netloc else ""
+    base_root = f"{scheme}://{netloc}"
+
+    # Keep existing path (if any) and append reset path.
+    reset_path = "/auth/reset-password"
+    full_path = (path.rstrip("/") if path else "") + reset_path
+    base_url = f"{base_root}{full_path}"
+
     separator = "&" if "?" in base_url else "?"
     return f"{base_url}{separator}{urlencode({'token': token})}"
 
