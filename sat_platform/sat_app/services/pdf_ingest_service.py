@@ -399,7 +399,14 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
     choice_figs = normalized.get("choice_figure_keys") or []
     explain_enabled = bool(current_app.config.get("AI_EXPLAIN_ENABLE", True))
     if explain_enabled:
-        explain_timeout = float(current_app.config.get("AI_EXPLAIN_TIMEOUT_SEC", 60))
+        # Keep explain timeout aligned with AI read timeout so we don't kill a slow-but-valid Responses call prematurely.
+        ai_read_timeout = float(
+            current_app.config.get(
+                "AI_READ_TIMEOUT_SEC",
+                current_app.config.get("AI_TIMEOUT_SECONDS", 120),
+            )
+        )
+        explain_timeout = float(current_app.config.get("AI_EXPLAIN_TIMEOUT_SEC", ai_read_timeout))
         app_obj = current_app._get_current_object()
 
         def _gen_expl(payload: dict):
