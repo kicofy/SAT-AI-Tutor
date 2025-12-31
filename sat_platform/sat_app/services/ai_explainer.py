@@ -14,6 +14,27 @@ from .ai_client import get_ai_client
 
 ANIMATION_PROTOCOL = "tutor.anim.v1"
 
+# Math domain and strategy prompts
+MATH_DOMAIN_MAP = (
+    "SAT Math domains: (1) Algebra: linear equations/functions, Ax+By=C, systems, inequalities. "
+    "(2) Advanced Math: nonlinear functions/equations, nonlinear systems, equivalent expressions. "
+    "(3) Problem-Solving & Data Analysis: ratio/unit, percent, single/dual-variable data, probability, sampling/MOE, study design/causality. "
+    "(4) Geometry & Trig: area/volume, lines/angles/triangles, right-triangle & trig, circles."
+)
+MATH_ROUTE_RULES = (
+    "Route selection: A) Graph/Desmos for intersections/roots/inequality shading/vertex/solution sets/regression or long algebra. "
+    "B) Plug in options or special values (start B/C; try 0,1,-1,2,10,100) when options are numeric/expressions or ask which holds. "
+    "C) Formal algebra when exact value/parameter range/identity/simplified form is required or \"exact/in terms of π\" is stated."
+)
+MATH_MC_RULES = (
+    "MC safety: estimate magnitude/sign to drop absurd options; typically 1–2 obvious eliminations. "
+    "If stuck, plug in options or special values to verify quickly."
+)
+MATH_SPR_RULES = (
+    "SPR grid-in: no lettered options ⇒ treat as fill. Grid allows ≤5 chars for positives (≤6 with leading minus; minus not counted). "
+    "Provide all scoring-equivalent forms: exact fractions, π forms, simplified radicals, and short decimals (e.g., 2/3, 0.666, .6666, .6667)."
+)
+
 
 def _resolve_language_tag(user_language: str | None) -> str:
     if not user_language:
@@ -135,7 +156,8 @@ def _build_messages(question, user_answer, user_language: str, depth: str, figur
         "- When highlighting text, quote enough surrounding words so the snippet is unique. Avoid vague markers such as “this sentence”.\n"
         "- If figures are provided, interpret them directly. When an animation focuses on a figure, set target to \"figure\", provide a short `text` describing the region, set `figure_id`, and explain how that visual supports or eliminates a choice."
     )
-    system_prompt += "\n" + (math_prompt_block if str(getattr(question, \"section\", \"\")).lower().startswith(\"math\") else rw_prompt_block)
+    is_math = str(getattr(question, "section", "")).lower().startswith("math")
+    system_prompt += "\n" + (math_prompt_block if is_math else rw_prompt_block)
     if language_tag == "zh":
         system_prompt += (
             "- For Chinese preference: use Chinese as the main language but include essential English keywords or quoted phrases in parentheses so students connect back to the SAT passage. Keep the bilingual mix concise (Chinese sentence + key English term) rather than writing two separate explanations.\n"
