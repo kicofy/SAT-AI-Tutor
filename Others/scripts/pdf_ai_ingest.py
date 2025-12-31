@@ -13,13 +13,13 @@ Usage:
 ------
 python3 scripts/pdf_ai_ingest.py \
     --pdf "scripts/samples/2408亚太B Reading_郭乃蕊老师.pdf" \
-    --model gpt-5.1 \
+    --model gpt-5.2 \
     --output normalized_questions.json
 
 Optional: automatically POST normalized questions to the backend drafts API:
 python3 scripts/pdf_ai_ingest.py \
     --pdf /path/to/file.pdf \
-    --model gpt-5.1 \
+    --model gpt-5.2 \
     --post http://127.0.0.1:5080 \
     --token "<admin JWT>"
 
@@ -321,7 +321,7 @@ def post_to_backend(base_url: str, token: str, normalized: List[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert SAT PDF to normalized questions via AI.")
     parser.add_argument("--pdf", required=True, help="Path to PDF file.")
-    parser.add_argument("--model", default=os.getenv("AI_PARSER_MODEL", "gpt-5.1"), help="OpenAI model name.")
+    parser.add_argument("--model", default=os.getenv("AI_PARSER_MODEL", "gpt-5.2"), help="OpenAI model name.")
     parser.add_argument("--output", help="Write normalized JSON array to file.")
     parser.add_argument(
         "--figures-dir",

@@ -68,7 +68,7 @@ def get_ai_client() -> AIClient:
         client = AIClient(
             api_key=app.config.get("OPENAI_API_KEY", ""),
             api_base=app.config.get("AI_API_BASE", "https://api.openai.com/v1"),
-            default_model=app.config.get("AI_EXPLAINER_MODEL", "gpt-5.1"),
+            default_model=app.config.get("AI_EXPLAINER_MODEL", "gpt-5.2"),
         )
         app.extensions["ai_client"] = client
     return client

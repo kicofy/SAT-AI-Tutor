@@ -25,7 +25,7 @@ class BaseConfig:
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(
         seconds=int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_SEC", "43200"))
     )
-    AI_MODEL_NAME = os.getenv("AI_MODEL_NAME", "gpt-5.1")
+    AI_MODEL_NAME = os.getenv("AI_MODEL_NAME", "gpt-5.2")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("AI_API_KEY", "")
     AI_API_KEY = OPENAI_API_KEY  # backwards-compatible alias
     AI_API_BASE = os.getenv("AI_API_BASE", "https://api.openai.com/v1")
@@ -36,7 +36,7 @@ class BaseConfig:
     AI_READ_TIMEOUT_SEC = int(
         os.getenv("AI_READ_TIMEOUT_SEC", str(AI_TIMEOUT_SECONDS))
     )
-    AI_EXPLAINER_MODEL = os.getenv("AI_EXPLAINER_MODEL", "gpt-5.1")
+    AI_EXPLAINER_MODEL = os.getenv("AI_EXPLAINER_MODEL", "gpt-5.2")
     AI_EXPLAINER_ENABLE = os.getenv("AI_EXPLAINER_ENABLE", "true").lower() in {"1", "true", "yes"}
     ADAPTIVE_DEFAULT_MASTERY = float(os.getenv("ADAPTIVE_DEFAULT_MASTERY", "0.5"))
     ADAPTIVE_CORRECT_INCREMENT = float(os.getenv("ADAPTIVE_CORRECT_INCREMENT", "0.05"))
@@ -58,15 +58,15 @@ class BaseConfig:
     MEMBERSHIP_CURRENCY = os.getenv("MEMBERSHIP_CURRENCY", "USD")
     ANALYTICS_HISTORY_DAYS = int(os.getenv("ANALYTICS_HISTORY_DAYS", "30"))
     AI_DIAGNOSTIC_ENABLE = os.getenv("AI_DIAGNOSTIC_ENABLE", "true").lower() in {"1", "true", "yes"}
-    AI_DIAGNOSTIC_MODEL = os.getenv("AI_DIAGNOSTIC_MODEL", "gpt-5.1")
+    AI_DIAGNOSTIC_MODEL = os.getenv("AI_DIAGNOSTIC_MODEL", "gpt-5.2")
     AI_PARSER_ENABLE = os.getenv("AI_PARSER_ENABLE", "true").lower() in {"1", "true", "yes"}
-    AI_PARSER_MODEL = os.getenv("AI_PARSER_MODEL", "gpt-5.1")
+    AI_PARSER_MODEL = os.getenv("AI_PARSER_MODEL", "gpt-5.2")
     AI_PDF_VISION_MODEL = os.getenv("AI_PDF_VISION_MODEL") or AI_PARSER_MODEL
     AI_PDF_NORMALIZE_MODEL = os.getenv("AI_PDF_NORMALIZE_MODEL") or AI_PARSER_MODEL
     AI_PDF_SOLVER_MODEL = (
         os.getenv("AI_PDF_SOLVER_MODEL")
         or os.getenv("AI_EXPLAINER_MODEL")
-        or "gpt-5.1"
+        or "gpt-5.2"
     )
     AI_TUTOR_NOTES_MODEL = (
         os.getenv("AI_TUTOR_NOTES_MODEL")
