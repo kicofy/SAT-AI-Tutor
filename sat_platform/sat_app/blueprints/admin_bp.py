@@ -1659,13 +1659,23 @@ def upload_draft_figure(draft_id: int):
             if _matches_choice(existing, choice_id):
                 to_delete.append(existing)
 
-    for existing in to_delete:
-        _delete_figure_file(existing)
-        db.session.delete(existing)
+    try:
+        for existing in to_delete:
+            _delete_figure_file(existing)
+            db.session.delete(existing)
 
-    figure = QuestionFigure(draft_id=draft.id, image_path=str(path), description=description, bbox=bbox)
-    db.session.add(figure)
-    db.session.commit()
+        figure = QuestionFigure(draft_id=draft.id, image_path=str(path), description=description, bbox=bbox)
+        db.session.add(figure)
+        _commit_with_retry()
+    except OperationalError as exc:
+        db.session.rollback()
+        current_app.logger.warning("Failed to save draft figure due to lock", exc_info=exc)
+        return jsonify({"message": "Database is locked, please retry."}), HTTPStatus.TOO_MANY_REQUESTS
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Failed to save draft figure")
+        return jsonify({"message": "Failed to save figure."}), HTTPStatus.INTERNAL_SERVER_ERROR
+
     job_event_broker.publish(
         {
             "type": "draft",
