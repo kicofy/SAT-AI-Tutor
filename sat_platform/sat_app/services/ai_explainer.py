@@ -294,7 +294,7 @@ def generate_explanation(
             {"role": "user", "content": prompt["user_content"]},
         ],
         # Structured outputs per Responses API: use text.format, not response_format.
-        "text": {"format": "json_object"},
+        "text": {"format": {"type": "json_object"}},  # ✅ format 是 object
         "temperature": 0.2,
     }
 
