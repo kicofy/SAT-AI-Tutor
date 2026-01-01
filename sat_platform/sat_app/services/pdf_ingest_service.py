@@ -580,6 +580,7 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
     try:
         normalized.pop("_ai_explanations", None)
         normalized.pop("difficulty_assessment", None)
+        normalized_coarse_uid = normalized.pop("coarse_uid", None)
         temp_data = question_schema.load(normalized)
         # Use a copy for validation so we don't lose passage in returned payload
         temp_for_validation = dict(temp_data)
@@ -602,6 +603,9 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                 issues,
             )
             return None
+        # Restore coarse_uid into payload for downstream persistence
+        if normalized_coarse_uid and "coarse_uid" not in temp_data:
+            temp_data["coarse_uid"] = normalized_coarse_uid
     except Exception as exc:
         current_app.logger.warning("Validation/load failed: %s", exc)
         return None
@@ -1245,7 +1249,10 @@ def _normalize_question(
     elif "passage" in data:
         data["passage"] = None
     data["skill_tags"] = _sanitize_skill_tags(data.get("skill_tags"))
+    data_coarse_uid = data.pop("coarse_uid", None)
     normalized = question_schema.load(data)
+    if data_coarse_uid is not None:
+        normalized["coarse_uid"] = data_coarse_uid
     # Normalize metadata container early to avoid None-type item assignment later.
     metadata = normalized.get("metadata")
     if not isinstance(metadata, dict):
@@ -1293,7 +1300,10 @@ def _normalize_question(
     # Validate normalized question; if invalid, record issues and skip
     try:
         normalized.pop("_ai_explanations", None)
+        normalized_coarse_uid = normalized.pop("coarse_uid", None)
         temp_data = question_schema.load(normalized)
+        if normalized_coarse_uid is not None and "coarse_uid" not in temp_data:
+            temp_data["coarse_uid"] = normalized_coarse_uid
         temp_data.pop("passage", None)
         model_columns = {col.key for col in Question.__table__.columns}
         if "metadata" in temp_data and "metadata_json" in model_columns:
