@@ -77,6 +77,11 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     existing_drafts = list(job.drafts)
     normalized_count = len(existing_drafts)
     max_page_done = job.processed_pages or 0
+    source_total_pages = (getattr(job, "source", None) or getattr(job, "source_obj", None))
+    try:
+        source_total_pages = source_total_pages.total_pages if source_total_pages else 0
+    except Exception:
+        source_total_pages = 0
     coarse_cache = job.payload_json if isinstance(job.payload_json, list) else []
     # Determine max page present in coarse cache
     coarse_max_page = 0
@@ -101,11 +106,12 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     pages_done = bool(coarse_cache) and max_page_done >= max(coarse_max_page, 0)
     skip_normalized = normalized_count
     base_questions = normalized_count
+    full_total_pages = max(job.total_pages or 0, source_total_pages or 0, coarse_max_page, max_page_done)
 
     job.status = "processing"
     job.error_message = None
     job.processed_pages = max_page_done
-    job.total_pages = job.total_pages or 0
+    job.total_pages = full_total_pages
     job.parsed_questions = normalized_count
     job.current_page = max_page_done
     job.status_message = (
@@ -164,6 +170,7 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 coarse_items=coarse_cache,
                 skip_normalized_count=skip_normalized,
                 coarse_persist=_persist_coarse,
+                total_pages_hint=full_total_pages,
             )
             job.total_blocks = job.parsed_questions
         else:

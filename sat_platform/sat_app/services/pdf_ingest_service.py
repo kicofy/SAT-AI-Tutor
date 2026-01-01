@@ -166,6 +166,7 @@ def ingest_pdf_document(
     coarse_items: Optional[List[dict]] = None,
     skip_normalized_count: int = 0,
     coarse_persist: Optional[Callable[[List[dict]], None]] = None,
+    total_pages_hint: int | None = None,
 ) -> List[dict]:
     """
     Sequential pipeline:
@@ -180,8 +181,22 @@ def ingest_pdf_document(
         return []
 
     cached_items: List[dict] = list(coarse_items or [])
+    max_cached_page = 0
+    for it in cached_items:
+        try:
+            pval = it.get("page") or it.get("page_index")
+            if pval is not None:
+                max_cached_page = max(max_cached_page, int(pval))
+        except Exception:
+            continue
+
     pages = _extract_pages_seq(path, start_page=start_page, end_page=end_page, progress_cb=progress_cb)
-    total_pages_span = base_pages_completed + len(pages)
+    total_pages_span = max(
+        base_pages_completed + len(pages),
+        max_cached_page,
+        base_pages_completed,
+        total_pages_hint or 0,
+    )
     if progress_cb:
         progress_cb(base_pages_completed, total_pages_span, base_questions, "Starting PDF ingestion")
     for p in pages:

@@ -605,18 +605,14 @@ def _ensure_aware(dt: datetime | None) -> datetime | None:
 
 
 def _prune_stale_jobs(max_age_hours: int = 2, stall_minutes: int = 3):
+    """
+    Keep prune non-destructive for resumes:
+    - Do not fail jobs purely by age.
+    - Only pause long-stalled processing jobs, leave pending jobs untouched.
+    """
     now = datetime.now(timezone.utc)
-    age_cutoff = now - timedelta(hours=max_age_hours)
     stall_cutoff = now - timedelta(minutes=stall_minutes)
 
-    stale_jobs = (
-        QuestionImportJob.query.filter(
-            QuestionImportJob.status.in_(("pending", "processing")),
-            QuestionImportJob.created_at < age_cutoff,
-            # Do NOT auto-fail jobs that have been resumed recently.
-            QuestionImportJob.last_progress_at < age_cutoff,
-        ).all()
-    )
     stalled_jobs = (
         QuestionImportJob.query.filter(
             QuestionImportJob.status == "processing",
@@ -624,27 +620,17 @@ def _prune_stale_jobs(max_age_hours: int = 2, stall_minutes: int = 3):
         ).all()
     )
 
-    targets = {job.id: job for job in stale_jobs}
-    targets.update({job.id: job for job in stalled_jobs})
-    if not targets:
+    if not stalled_jobs:
         return
 
-    for job in targets.values():
+    for job in stalled_jobs:
         last_progress = _ensure_aware(job.last_progress_at)
-        # If the job has recent progress (>= age_cutoff), skip failing it to allow resume.
-        if last_progress and last_progress >= age_cutoff:
+        if last_progress and last_progress >= stall_cutoff:
             continue
         job.status = "failed"
-        if last_progress and last_progress < stall_cutoff:
-            job.status_message = (
-                "Paused due to no progress for an extended period. "
-                "Please resume to continue parsing."
-            )
-        else:
-            job.status_message = (
-                "Automatically paused after exceeding the maximum processing window. "
-                "Please review the drafts and decide whether to resume or cancel."
-            )
+        job.status_message = (
+            "Paused due to no progress for an extended period. Please resume to continue parsing."
+        )
         job.last_progress_at = now
         db.session.add(job)
         with db.session.no_autoflush:
