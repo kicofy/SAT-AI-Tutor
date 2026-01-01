@@ -660,10 +660,14 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
         data["skill_tags"] = ["M_Algebra"] if data["section"] == "Math" else ["RW_MainIdeasEvidence"]
     data["has_figure"] = bool(data.get("has_figure") or data.get("choice_figure_keys"))
 
+    # Normalize metadata container to a dict so later assignments (e.g., page_image_b64) are safe.
+    meta = data.get("metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+    data["metadata"] = meta
+
     if source_qnum is not None:
         meta = data.get("metadata") or {}
-        if not isinstance(meta, dict):
-            meta = {}
         meta["source_question_number"] = source_qnum
         data["metadata"] = meta
 
