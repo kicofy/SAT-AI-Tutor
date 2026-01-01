@@ -330,6 +330,10 @@ def _coerce_draft_payload(payload: dict | None) -> dict:
         return {}
     data = dict(payload)
 
+    # Drop ingest-only hints that are not in QuestionCreateSchema
+    for transient_key in ("coarse_uid", "status"):
+        data.pop(transient_key, None)
+
     choices = data.get("choices")
     if isinstance(choices, list):
         mapped: dict[str, str] = {}
