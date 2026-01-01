@@ -8,6 +8,7 @@ import io
 import json
 import threading
 import time
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from collections import defaultdict, deque
 from pathlib import Path
@@ -126,6 +127,23 @@ _rate_window_minute: dict[str, deque] = defaultdict(deque)
 _rate_window_second: dict[str, deque] = defaultdict(deque)
 
 
+def _compute_coarse_uid(job_id: int | None, page_index: int, local_idx: int, payload: dict) -> str:
+    """Deterministic coarse_uid so resumes can match the same question."""
+    base = f"J{job_id or 'NA'}-P{page_index}-Q{local_idx}"
+    sig_src = json.dumps(
+        {
+            "prompt": payload.get("prompt"),
+            "stem": payload.get("stem_text"),
+            "choices": payload.get("choices"),
+            "section": payload.get("section"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    sig = hashlib.md5(f"{base}-{sig_src}".encode("utf-8")).hexdigest()[:12]
+    return f"{base}-{sig}"
+
+
 def _enforce_rate_limit(model: str) -> None:
     app = current_app
     max_rpm = int(app.config.get("AI_RESPONSES_MAX_RPM", 40))
@@ -202,10 +220,13 @@ def ingest_pdf_document(
     for p in pages:
         idx = p["page_index"]
         coarse = _extract_coarse_questions(p, job_id=job_id)
-        for it in coarse:
+        for local_idx, it in enumerate(coarse, start=1):
             it["page_index"] = idx
             it["page"] = idx  # persist page for resume bookkeeping
             it["page_image_b64"] = p.get("page_image_b64")
+            if not it.get("coarse_uid"):
+                it["coarse_uid"] = _compute_coarse_uid(job_id, idx, local_idx, it)
+            it["status"] = (it.get("status") or "pending").lower()
             cached_items.append(it)
         if coarse_persist:
             coarse_persist(cached_items)
@@ -217,8 +238,21 @@ def ingest_pdf_document(
                 f"Coarse total: {len(cached_items)} after page {idx}",
             )
 
-    # Drop already normalized items to avoid reprocessing when cache contains earlier pages.
-    if skip_normalized_count > 0 and cached_items:
+    # Normalize/complete items may already exist; ensure every item has coarse_uid/status.
+    normalized_items: List[dict] = []
+    for idx, it in enumerate(cached_items, start=1):
+        if not it.get("coarse_uid"):
+            it["coarse_uid"] = _compute_coarse_uid(job_id, int(it.get("page") or it.get("page_index") or 0), idx, it)
+        it["status"] = (it.get("status") or "pending").lower()
+        normalized_items.append(it)
+    cached_items = normalized_items
+
+    # Prefer status-based skipping: completed/explained items are skipped. Fall back to legacy skip count.
+    remaining_items = [it for it in cached_items if it.get("status") not in ("explained", "completed")]
+    if remaining_items:
+        cached_items = remaining_items
+    elif skip_normalized_count > 0 and cached_items:
+        # legacy fallback if no status present
         if skip_normalized_count >= len(cached_items):
             cached_items = []
         else:
@@ -232,6 +266,7 @@ def ingest_pdf_document(
             break
         eq = _enrich_item(item, job_id=job_id)
         if eq:
+            item["status"] = "completed"
             enriched.append(eq)
             if question_cb:
                 question_cb(eq)
@@ -242,6 +277,9 @@ def ingest_pdf_document(
                 base_questions + len(enriched),
                 f"Normalized {i}/{total}",
             )
+        # Persist updated statuses so resume can skip completed items.
+        if coarse_persist:
+            coarse_persist(cached_items)
     return enriched
 
 
@@ -391,12 +429,17 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
         "has_figure_raw": bool(item.get("has_figure")),
         "choice_figs_raw": bool(item.get("choice_figure_keys")),
     }
+    coarse_uid = item.get("coarse_uid")
+    item["status"] = (item.get("status") or "pending").lower()
     current_app.logger.info("Enrich start", extra=ctx)
 
+    item["status"] = "normalizing"
     normalized = _normalize_question_item(item, job_id=job_id)
     if not normalized:
         current_app.logger.warning("Normalize returned None", extra=ctx)
         return None
+    normalized["coarse_uid"] = coarse_uid
+    item["status"] = "normalized"
     current_app.logger.info(
         "Normalize done",
         extra={
@@ -414,6 +457,7 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
         normalized.setdefault("correct_answer", {})["value"] = solved["answer_value"]
         # Deliberately drop solver's solution text; only keep the final answer
         current_app.logger.info("Solve done", extra={**ctx, "answer": solved.get("answer_value")})
+        item["status"] = "solved"
     else:
         current_app.logger.warning("Solve failed or empty", extra=ctx)
 
@@ -500,6 +544,7 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
                         meta = {}
                     meta["ai_explanations"] = expl
                     normalized["metadata"] = meta
+                    item["status"] = "explained"
                     current_app.logger.info(
                         "Explain done",
                         extra={**ctx, "elapsed_ms": int((time.perf_counter() - explain_started) * 1000)},
@@ -522,6 +567,7 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
             has_fig,
             bool(choice_figs),
         )
+        item["status"] = "explained"
 
     # Validate
     try:
@@ -557,6 +603,8 @@ def _enrich_item(item: dict, *, job_id: int | None) -> dict | None:
     payload = dict(temp_data)
     if "metadata_json" in payload and "metadata" not in payload:
         payload["metadata"] = payload.pop("metadata_json")
+    if coarse_uid:
+        payload["coarse_uid"] = coarse_uid
     return payload
 
 
@@ -615,6 +663,8 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
     data["choices"] = norm_choices if norm_choices else None
     data["question_type"] = data.get("question_type") or ("choice" if norm_choices else "fill")
     data["section"] = _coerce_section(data.get("section"))
+    if item.get("coarse_uid"):
+        data["coarse_uid"] = item.get("coarse_uid")
 
     # Preserve page/index so each question points to the correct PDF page
     page_val = item.get("page") or item.get("page_index")

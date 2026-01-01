@@ -31,6 +31,20 @@ def _flush_with_retry(attempts: int = 5, base_delay: float = 0.2) -> None:
 
 
 def _save_draft(job: QuestionImportJob, payload: dict) -> None:
+    """Upsert draft by coarse_uid to avoid duplicates on resume."""
+    coarse_uid = payload.get("coarse_uid")
+    if coarse_uid:
+        for draft in list(job.drafts):
+            try:
+                if (draft.payload or {}).get("coarse_uid") == coarse_uid:
+                    draft.payload = payload
+                    draft.updated_at = datetime.now(timezone.utc)
+                    db.session.add(draft)
+                    _flush_with_retry()
+                    job_event_broker.publish({"type": "draft", "payload": draft.serialize()})
+                    return
+            except Exception:
+                continue
     draft = QuestionDraft(job_id=job.id, payload=payload, source_id=job.source_id)
     db.session.add(draft)
     _flush_with_retry()
