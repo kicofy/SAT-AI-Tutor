@@ -88,7 +88,10 @@ class QuestionDraft(db.Model):
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    job = db.relationship("QuestionImportJob", backref="drafts")
+    job = db.relationship(
+        "QuestionImportJob",
+        backref=db.backref("drafts", cascade="all, delete-orphan", passive_deletes=True),
+    )
     source = db.relationship("QuestionSource", back_populates="drafts")
     figures = db.relationship(
         QuestionFigure,

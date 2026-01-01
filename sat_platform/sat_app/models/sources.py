@@ -23,8 +23,22 @@ class QuestionSource(db.Model):
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
     uploader = db.relationship("User", backref="question_sources")
-    jobs = db.relationship("QuestionImportJob", back_populates="source", lazy="dynamic")
+    # When a PDF collection (QuestionSource) is deleted, also remove its ingest
+    # jobs and drafts so coarse caches/drafts don't linger.
+    jobs = db.relationship(
+        "QuestionImportJob",
+        back_populates="source",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     questions = db.relationship("Question", back_populates="source", lazy="dynamic")
-    drafts = db.relationship("QuestionDraft", back_populates="source", lazy="dynamic")
+    drafts = db.relationship(
+        "QuestionDraft",
+        back_populates="source",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
