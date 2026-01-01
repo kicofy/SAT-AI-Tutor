@@ -88,7 +88,10 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
         raise ValueError(f"Job {job_id} not found")
     job_id_int = job.id  # stable id to avoid expired attribute access after delete
     # Resume-aware: use already materialized items as the source of truth: drafts + published questions for this source.
-    existing_drafts = list(job.drafts)
+    # Always load drafts from the DB so the count reflects reality (in case the
+    # in-memory relationship is stale or drafts were deleted outside this
+    # session).
+    existing_drafts = list(QuestionDraft.query.filter_by(job_id=job_id_int).all())
     draft_count = len(existing_drafts)
     # Count already published questions tied to the same source.
     published_count = (
@@ -178,7 +181,8 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 job.total_pages = total_pages
                 if job.source and total_pages:
                     job.source.total_pages = total_pages
-                job.parsed_questions = normalized_count
+                # Keep the visible normalized count in sync with the actual drafts present.
+                job.parsed_questions = db.session.query(QuestionDraft).filter_by(job_id=job_id_int).count()
                 job.current_page = page_idx
                 if message:
                     job.status_message = message
@@ -196,7 +200,8 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 if not _job_exists(job_id_int):
                     raise ObjectDeletedError(f"Job {job_id_int} no longer exists; aborting ingest.", None, None)
                 _save_draft(job, payload)
-                job.parsed_questions += 1
+                # Recompute from DB to avoid drift if any draft was removed/added outside the session.
+                job.parsed_questions = db.session.query(QuestionDraft).filter_by(job_id=job_id_int).count()
                 _commit_with_retry()
 
             pdf_ingest_service.ingest_pdf_document(
