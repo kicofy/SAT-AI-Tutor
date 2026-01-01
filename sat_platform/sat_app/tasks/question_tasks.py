@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm.exc import ObjectDeletedError
 
 from ..extensions import db
-from ..models import QuestionImportJob, QuestionDraft
+from ..models import QuestionImportJob, QuestionDraft, Question
 from ..services.job_events import job_event_broker
 from ..utils.file_parser import parse_file
 from ..services import ai_question_parser, pdf_ingest_service
