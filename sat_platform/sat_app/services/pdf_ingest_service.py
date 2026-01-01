@@ -261,6 +261,7 @@ def ingest_pdf_document(
     enriched: List[dict] = []
     total = len(cached_items)
     start_idx = 0  # after trimming, always start from 0
+    total_target = base_questions + total
     for i, item in enumerate(cached_items[start_idx:], start=start_idx + 1):
         if cancel_event and cancel_event.is_set():
             break
@@ -270,12 +271,18 @@ def ingest_pdf_document(
             enriched.append(eq)
             if question_cb:
                 question_cb(eq)
+            status_msg = f"Normalized {base_questions + len(enriched)}/{total_target}"
+        else:
+            status_msg = (
+                f"Normalization failed for coarse_uid={item.get('coarse_uid')}; "
+                f"saved {base_questions + len(enriched)}/{total_target} (attempt {i}/{total})"
+            )
         if progress_cb:
             progress_cb(
                 item.get("page_index", 0),
                 total_pages_span,
                 base_questions + len(enriched),
-                f"Normalized {i}/{total}",
+                status_msg,
             )
         # Persist updated statuses so resume can skip completed items.
         if coarse_persist:
