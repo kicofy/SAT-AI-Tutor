@@ -94,7 +94,9 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     published_count = (
         db.session.query(Question).filter(Question.source_id == job.source_id).count() if job.source_id else 0
     )
-    normalized_count = draft_count + published_count
+    # Baseline for display (Draft Review) vs. skip baseline (include already published)
+    display_count = draft_count  # what UI should show as "Normalized" (drafts available to review)
+    skip_baseline = draft_count + published_count  # how many items should be skipped on resume
     max_page_done = job.processed_pages or 0
     source_total_pages = (getattr(job, "source", None) or getattr(job, "source_obj", None))
     try:
@@ -136,24 +138,24 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     max_page_done = max(max_page_done, max_page_from_drafts, max_page_from_published)
     # If coarse pages are already extracted up to processed_pages, skip page extraction on resume
     pages_done = bool(coarse_cache) and max_page_done >= max(coarse_max_page, 0)
-    base_questions = normalized_count
+    base_questions = display_count
 
     # Use drafts as the only skip baseline. Optionally trim coarse cache so iteration starts after completed items.
     coarse_items_for_ingest = coarse_cache
-    if normalized_count > 0 and coarse_cache:
-        if normalized_count >= len(coarse_cache):
+    if skip_baseline > 0 and coarse_cache:
+        if skip_baseline >= len(coarse_cache):
             coarse_items_for_ingest = []
         else:
-            coarse_items_for_ingest = coarse_cache[normalized_count:]
+            coarse_items_for_ingest = coarse_cache[skip_baseline:]
     # If we trim the coarse cache up front, we no longer need to skip inside ingest.
-    skip_normalized = 0 if coarse_items_for_ingest is not coarse_cache else normalized_count
+    skip_normalized = 0 if coarse_items_for_ingest is not coarse_cache else skip_baseline
     full_total_pages = max(job.total_pages or 0, source_total_pages or 0, coarse_max_page, max_page_done)
 
     job.status = "processing"
     job.error_message = None
     job.processed_pages = max_page_done
     job.total_pages = full_total_pages
-    job.parsed_questions = normalized_count
+    job.parsed_questions = display_count
     job.current_page = max_page_done
     job.status_message = (
         "Initializing ingestion"
