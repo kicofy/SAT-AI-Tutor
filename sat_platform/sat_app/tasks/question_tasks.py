@@ -104,8 +104,17 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     max_page_done = max(max_page_done, max_page_from_drafts)
     # If coarse pages are already extracted up to processed_pages, skip page extraction on resume
     pages_done = bool(coarse_cache) and max_page_done >= max(coarse_max_page, 0)
-    skip_normalized = normalized_count
     base_questions = normalized_count
+
+    # Use drafts as the only skip baseline. Optionally trim coarse cache so iteration starts after completed items.
+    coarse_items_for_ingest = coarse_cache
+    if normalized_count > 0 and coarse_cache:
+        if normalized_count >= len(coarse_cache):
+            coarse_items_for_ingest = []
+        else:
+            coarse_items_for_ingest = coarse_cache[normalized_count:]
+    # If we trim the coarse cache up front, we no longer need to skip inside ingest.
+    skip_normalized = 0 if coarse_items_for_ingest is not coarse_cache else normalized_count
     full_total_pages = max(job.total_pages or 0, source_total_pages or 0, coarse_max_page, max_page_done)
 
     job.status = "processing"
@@ -167,7 +176,7 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 end_page=None if not pages_done else max_page_done,
                 base_pages_completed=max_page_done,
                 base_questions=base_questions,
-                coarse_items=coarse_cache,
+                coarse_items=coarse_items_for_ingest,
                 skip_normalized_count=skip_normalized,
                 coarse_persist=_persist_coarse,
                 total_pages_hint=full_total_pages,
