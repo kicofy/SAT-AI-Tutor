@@ -671,7 +671,8 @@ def _normalize_question_item(item: dict, *, job_id: int | None) -> dict | None:
         return None
 
     norm_choices = _normalize_choices(data.get("choices"))
-    data["choices"] = norm_choices if norm_choices else None
+    # Keep a dict (possibly empty) so schema validation never sees None.
+    data["choices"] = norm_choices or {}
     data["question_type"] = data.get("question_type") or ("choice" if norm_choices else "fill")
     data["section"] = _coerce_section(data.get("section"))
     if item.get("coarse_uid"):
@@ -1212,8 +1213,8 @@ def _normalize_question(
         data["metadata"] = metadata
     raw_choices = data.get("choices")
     normalized_choices = _normalize_choices(raw_choices)
-    if normalized_choices:
-        data["choices"] = normalized_choices
+    # Always store choices as dict (allow empty) to satisfy schema
+    data["choices"] = normalized_choices or {}
     if not normalized_choices:
         data["question_type"] = data.get("question_type") or "fill"
     else:
