@@ -73,9 +73,14 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
     if not job:
         raise ValueError(f"Job {job_id} not found")
     job_id_int = job.id  # stable id to avoid expired attribute access after delete
-    # Resume-aware: use already normalized drafts as the single source of truth.
+    # Resume-aware: use already materialized items as the source of truth: drafts + published questions for this source.
     existing_drafts = list(job.drafts)
-    normalized_count = len(existing_drafts)
+    draft_count = len(existing_drafts)
+    # Count already published questions tied to the same source.
+    published_count = (
+        db.session.query(Question).filter(Question.source_id == job.source_id).count() if job.source_id else 0
+    )
+    normalized_count = draft_count + published_count
     max_page_done = job.processed_pages or 0
     source_total_pages = (getattr(job, "source", None) or getattr(job, "source_obj", None))
     try:
@@ -101,7 +106,20 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
                 max_page_from_drafts = max(max_page_from_drafts, int(payload_page))
         except Exception:
             continue
-    max_page_done = max(max_page_done, max_page_from_drafts)
+    # Determine max page from published questions (if any)
+    max_page_from_published = 0
+    if job.source_id:
+        try:
+            max_page_from_published = (
+                db.session.query(db.func.max(Question.source_page))
+                .filter(Question.source_id == job.source_id)
+                .scalar()
+                or 0
+            )
+        except Exception:
+            max_page_from_published = 0
+
+    max_page_done = max(max_page_done, max_page_from_drafts, max_page_from_published)
     # If coarse pages are already extracted up to processed_pages, skip page extraction on resume
     pages_done = bool(coarse_cache) and max_page_done >= max(coarse_max_page, 0)
     base_questions = normalized_count
