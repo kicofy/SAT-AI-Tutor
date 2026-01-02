@@ -311,6 +311,31 @@ export function PracticeView({
 
   const hasChoiceImages = useMemo(() => choiceFigureIds.size > 0, [choiceFigureIds]);
 
+  // Detect whether choice images are “wide” (very horizontal). If wide, keep a single-column layout
+  // to avoid squashing; otherwise allow 2-column grid for square-ish images.
+  const [isChoiceImageWide, setIsChoiceImageWide] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setIsChoiceImageWide(false);
+    if (!currentQuestion?.choice_figures) return;
+    const refs = Object.values(currentQuestion.choice_figures).filter((ref) => !!ref?.url);
+    if (!refs.length) return;
+    const url = refs[0].url;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      const ratio = img.width && img.height ? img.width / img.height : 1;
+      setIsChoiceImageWide(ratio > 1.4); // heuristic: wider than ~7:5 treats as wide
+    };
+    img.onerror = () => {
+      if (!cancelled) setIsChoiceImageWide(false);
+    };
+    img.src = url;
+    return () => {
+      cancelled = true;
+    };
+  }, [currentQuestion?.choice_figures]);
+
   const currentQuestionId = currentQuestion?.question_id ?? null;
 
   useEffect(() => {
@@ -1486,7 +1511,9 @@ useEffect(() => {
                 <div
                   className={
                     hasChoiceImages
-                      ? "grid grid-cols-1 gap-3 sm:grid-cols-2"
+                      ? isChoiceImageWide
+                        ? "grid grid-cols-1 gap-3"
+                        : "grid grid-cols-1 gap-3 sm:grid-cols-2"
                       : "space-y-2"
                   }
                 >
