@@ -311,7 +311,8 @@ export function PracticeView({
 
   const hasChoiceImages = useMemo(() => choiceFigureIds.size > 0, [choiceFigureIds]);
 
-  // Heuristic: detect if choice images are wide; if wide, use 1-column; otherwise allow 2-column.
+  // Detect whether choice images are “wide” (very horizontal). If wide, keep a single-column layout
+  // to avoid squashing; otherwise allow 2-column grid for square-ish images.
   const [isChoiceImageWide, setIsChoiceImageWide] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -324,7 +325,7 @@ export function PracticeView({
     img.onload = () => {
       if (cancelled) return;
       const ratio = img.width && img.height ? img.width / img.height : 1;
-      setIsChoiceImageWide(ratio > 1.4); // treat >1.4:1 as wide
+      setIsChoiceImageWide(ratio > 1.4); // heuristic: wider than ~7:5 treats as wide
     };
     img.onerror = () => {
       if (!cancelled) setIsChoiceImageWide(false);
