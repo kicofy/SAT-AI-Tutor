@@ -311,8 +311,7 @@ export function PracticeView({
 
   const hasChoiceImages = useMemo(() => choiceFigureIds.size > 0, [choiceFigureIds]);
 
-  // Detect whether choice images are “wide” (very horizontal). If wide, keep a single-column layout
-  // to avoid squashing; otherwise allow 2-column grid for square-ish images.
+  // Heuristic: detect if choice images are wide; if wide, use 1-column; otherwise allow 2-column.
   const [isChoiceImageWide, setIsChoiceImageWide] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -325,7 +324,7 @@ export function PracticeView({
     img.onload = () => {
       if (cancelled) return;
       const ratio = img.width && img.height ? img.width / img.height : 1;
-      setIsChoiceImageWide(ratio > 1.4); // heuristic: wider than ~7:5 treats as wide
+      setIsChoiceImageWide(ratio > 1.4); // treat >1.4:1 as wide
     };
     img.onerror = () => {
       if (!cancelled) setIsChoiceImageWide(false);
@@ -1590,7 +1589,7 @@ useEffect(() => {
                             <img
                               src={buildFigureSrc(imageRef.url) || imageRef.url}
                               alt={imageRef.description || `Choice ${key}`}
-                              className="h-44 w-full max-w-[280px] rounded-lg border border-white/10 bg-black/20 p-2 object-contain md:h-52 md:max-w-[340px]"
+                              className="w-full rounded-lg border border-white/10 bg-black/20 p-2 object-contain"
                             />
                           </div>
                         ) : null}
