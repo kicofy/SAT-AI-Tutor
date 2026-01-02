@@ -1668,6 +1668,8 @@ def upload_draft_figure(draft_id: int):
 
         figure = QuestionFigure(draft_id=draft.id, image_path=str(path), description=description, bbox=bbox)
         db.session.add(figure)
+        # Ensure PK is assigned before serialization
+        db.session.flush()
         _commit_with_retry()
     except OperationalError as exc:
         db.session.rollback()
