@@ -1553,13 +1553,20 @@ def preview_draft_question(draft_id: int):
         return jsonify({"message": "Forbidden"}), HTTPStatus.FORBIDDEN
     draft = _get_draft_or_404(draft_id)
     payload = draft.payload or {}
+    raw_choices = payload.get("choices") or {}
+    answer_schema = payload.get("answer_schema")
+    # Preserve explicit question_type when present; otherwise infer fill if no choices but an answer_schema exists.
+    inferred_qtype = payload.get("question_type") or ("fill" if not raw_choices and answer_schema else "choice")
+
     question_payload: dict = {
         "question_id": -draft.id,  # negative id to avoid clashing with real questions
         "question_uid": f"draft-{draft.id}",
         "section": payload.get("section") or payload.get("subject") or "RW",
         "sub_section": payload.get("sub_section"),
         "stem_text": payload.get("stem_text") or "",
-        "choices": payload.get("choices") or {},
+        "choices": raw_choices,
+        "question_type": inferred_qtype,
+        "answer_schema": answer_schema,
         "skill_tags": payload.get("skill_tags") or [],
         "metadata": payload.get("metadata"),
         "has_figure": bool(payload.get("has_figure")),
