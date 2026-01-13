@@ -138,9 +138,14 @@ def process_job(job_id: int, cancel_event=None) -> QuestionImportJob:
         except Exception:
             max_page_from_published = 0
 
-    max_page_done = max(max_page_done, max_page_from_drafts, max_page_from_published)
-    # If coarse pages are already extracted up to processed_pages, skip page extraction on resume
-    pages_done = bool(coarse_cache) and max_page_done >= max(coarse_max_page, 0)
+    max_page_done = max(max_page_done, max_page_from_drafts, max_page_from_published, coarse_max_page)
+    # If coarse pages are already extracted up to processed_pages, skip page extraction on resume.
+    # Be tolerant of cases where processed_pages wasn't persisted but coarse cache or total_pages hint exists.
+    pages_done = False
+    if coarse_cache:
+        pages_done = max_page_done >= max(coarse_max_page, 0)
+    elif job.total_pages:
+        pages_done = max_page_done >= job.total_pages
     base_questions = display_count
 
     # Use drafts as the only skip baseline. Optionally trim coarse cache so iteration starts after completed items.
